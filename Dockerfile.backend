@@ -3,9 +3,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /runright ./cmd/runright
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /runright-server ./cmd/server
 
 FROM scratch
-COPY --from=builder /runright /runright
+COPY --from=builder /runright-server /runright-server
 EXPOSE 8080
-ENTRYPOINT ["/runright", "serve"]
+ENTRYPOINT ["/runright-server"]
