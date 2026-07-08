@@ -9,6 +9,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: runright
+          POSTGRES_USER: runright
+          POSTGRES_PASSWORD: runright
+        ports:
+          - 5435:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -19,6 +35,8 @@ jobs:
           cache: true
 
       - name: Run tests
+        env:
+          DATABASE_URL: postgres://runright:runright@localhost:5435/runright?sslmode=disable
         run: go test ./...
 
   web:
