@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!-- Background -->
+  <circle cx="12" cy="12" r="12" fill="#2C1A0E"/>
+  <!-- Gauge circle -->
+  <circle cx="12" cy="12" r="9.2" stroke="#FBF0DC" stroke-width="1.5"/>
+  <!-- Tick marks: 12, 9, 3 o'clock -->
+  <line x1="12" y1="3.8" x2="12" y2="6"   stroke="#FBF0DC" stroke-width="1.4" stroke-linecap="round"/>
+  <line x1="3.8" y1="12" x2="6"   y2="12" stroke="#FBF0DC" stroke-width="1.4" stroke-linecap="round"/>
+  <line x1="20.2" y1="12" x2="18" y2="12" stroke="#FBF0DC" stroke-width="1.4" stroke-linecap="round"/>
+  <!-- Needle pointing to ~2 o'clock (right-sized zone) -->
+  <line x1="12" y1="12" x2="17.2" y2="7.8" stroke="#FBF0DC" stroke-width="1.8" stroke-linecap="round"/>
+  <!-- Center pivot -->
+  <circle cx="12" cy="12" r="1.4" fill="#FBF0DC"/>
+</svg>

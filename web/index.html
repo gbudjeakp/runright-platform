@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RunRight — Right-size your CI runners</title>
+
+    <!-- Primary meta -->
+    <meta name="description" content="RunRight is a free, self-hosted CI machine right-sizing tool. Stop paying for oversized GitHub Actions runners — get accurate recommendations backed by real workload data." />
+    <meta name="keywords" content="CI right-sizing, GitHub Actions cost, runner optimization, AWS EC2 CI, GCP CI runners, self-hosted CI monitoring, Jenkins machine sizing" />
+    <meta name="author" content="Sebastian Gbudje" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://runright.dev/" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://runright.dev/" />
+    <meta property="og:site_name" content="RunRight" />
+    <meta property="og:title" content="RunRight — Right-size your CI runners" />
+    <meta property="og:description" content="Free, self-hosted tool that samples real CPU and memory usage in CI jobs and recommends the optimal machine size from the AWS and GCP catalog." />
+    <meta property="og:image" content="https://runright.dev/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="RunRight dashboard showing CI job recommendations" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@sgbudje" />
+    <meta name="twitter:title" content="RunRight — Right-size your CI runners" />
+    <meta name="twitter:description" content="Stop guessing at CI machine sizes. RunRight samples real workload data and ranks every instance in the AWS and GCP catalog by cost and fit." />
+    <meta name="twitter:image" content="https://runright.dev/og-image.png" />
+
+    <!-- Structured data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "RunRight",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "Linux, macOS, Windows",
+      "description": "Self-hosted CI machine right-sizing tool. Monitors CPU, memory, and disk I/O in CI jobs and recommends the optimal AWS or GCP instance type.",
+      "url": "https://runright.dev",
+      "author": {
+        "@type": "Person",
+        "name": "Sebastian Gbudje",
+        "url": "https://github.com/sgbudje"
+      },
+      "license": "https://opensource.org/licenses/MIT",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      }
+    }
+    </script>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=Bebas+Neue&family=Lato:wght@300;400;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

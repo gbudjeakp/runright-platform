@@ -1,0 +1,98 @@
+name: runright
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: runright
+      POSTGRES_USER: runright
+      POSTGRES_PASSWORD: runright
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U runright"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://runright:runright@postgres:5432/runright?sslmode=disable
+      RUNRIGHT_API_KEY: ${RUNRIGHT_API_KEY:-}
+      RUNRIGHT_SSO_ENABLED: "true"
+      RUNRIGHT_BASE_URL: "http://localhost:8080"
+      # AI Assistant (Ollama)
+      RUNRIGHT_AI_PROVIDER: ${RUNRIGHT_AI_PROVIDER:-ollama}
+      RUNRIGHT_AI_BASE_URL: ${RUNRIGHT_AI_BASE_URL:-http://code-monger-15.tailfd6b1b.ts.net:11434}
+      RUNRIGHT_AI_MODEL: ${RUNRIGHT_AI_MODEL:-llama3.1}
+      # RAG / Embeddings (enables semantic search for AI assistant)
+      RUNRIGHT_USE_RAG: ${RUNRIGHT_USE_RAG:-true}
+      RUNRIGHT_EMBEDDING_URL: ${RUNRIGHT_EMBEDDING_URL:-http://code-monger-15.tailfd6b1b.ts.net:11434}
+      RUNRIGHT_EMBEDDING_MODEL: ${RUNRIGHT_EMBEDDING_MODEL:-nomic-embed-text}
+      # SSO Provider credentials (set these to enable providers)
+      # RUNRIGHT_SSO_GOOGLE_CLIENT_ID: ""
+      # RUNRIGHT_SSO_GOOGLE_CLIENT_SECRET: ""
+      # RUNRIGHT_SSO_GITHUB_CLIENT_ID: ""
+      # RUNRIGHT_SSO_GITHUB_CLIENT_SECRET: ""
+      GIN_MODE: release
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backend-dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      dockerfile: Dockerfile.backend.dev
+    working_dir: /app
+    command: ["air", "-c", ".air.toml"]
+    volumes:
+      - ./:/app
+      - go_mod_cache:/go/pkg/mod
+      - go_build_cache:/root/.cache/go-build
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://runright:runright@postgres:5432/runright?sslmode=disable
+      RUNRIGHT_API_KEY: ${RUNRIGHT_API_KEY:-}
+      RUNRIGHT_DISABLE_AUTH: "true"
+      RUNRIGHT_SSO_ENABLED: "true"
+      RUNRIGHT_BASE_URL: "http://localhost:8080"
+      # AI Assistant
+      RUNRIGHT_AI_PROVIDER: ${RUNRIGHT_AI_PROVIDER:-ollama}
+      RUNRIGHT_AI_BASE_URL: ${RUNRIGHT_AI_BASE_URL:-http://code-monger-15.tailfd6b1b.ts.net:11434}
+      RUNRIGHT_AI_MODEL: ${RUNRIGHT_AI_MODEL:-llama3.1}
+      # RAG / Embeddings
+      RUNRIGHT_USE_RAG: ${RUNRIGHT_USE_RAG:-true}
+      RUNRIGHT_EMBEDDING_URL: ${RUNRIGHT_EMBEDDING_URL:-http://code-monger-15.tailfd6b1b.ts.net:11434}
+      RUNRIGHT_EMBEDDING_MODEL: ${RUNRIGHT_EMBEDDING_MODEL:-nomic-embed-text}
+      GIN_MODE: release
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8080
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  go_mod_cache:
+  go_build_cache:
