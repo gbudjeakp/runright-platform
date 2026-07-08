@@ -1,0 +1,46 @@
+Elastic License 2.0 (ELv2)
+
+Copyright (c) 2026 Sebastian Gbudje
+
+ACCEPTANCE
+
+By using the software, you agree to all of the terms and conditions below.
+
+DEFINITIONS
+
+"Licensor" means Sebastian Gbudje.
+
+"Licensed Work" means the RunRight software made available under this license.
+
+"Embedded" means incorporating the Licensed Work into another application such
+that the Licensed Work is not reasonably separable from that application.
+
+"SaaS" means providing access to the Licensed Work as a service, including
+through a network.
+
+GRANT OF LICENSE
+
+The Licensor grants you a non-exclusive, royalty-free, worldwide, non-
+sublicensable, non-transferable license to use, copy, modify, and distribute
+the Licensed Work, subject to the following conditions:
+
+LIMITATIONS
+
+1. You may not provide the Licensed Work to third parties as a hosted or managed
+   service, where the service provides users with access to any substantial set
+   of the features or functionality of the Licensed Work (SaaS use).
+
+2. You may not move, change, disable, or circumvent the license key
+   functionality in the Licensed Work, and you may not remove or obscure any
+   functionality in the Licensed Work that is protected by the license key.
+
+3. You may not alter, remove, or obscure any licensing, copyright, or other
+   notices of the Licensor in the Licensed Work.
+
+DISCLAIMER
+
+THE LICENSED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE LICENSED WORK.
