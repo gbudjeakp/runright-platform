@@ -30,11 +30,11 @@ services:
       RUNRIGHT_BASE_URL: "http://localhost:8080"
       # AI Assistant (Ollama)
       RUNRIGHT_AI_PROVIDER: ${RUNRIGHT_AI_PROVIDER:-ollama}
-      RUNRIGHT_AI_BASE_URL: ${RUNRIGHT_AI_BASE_URL:-http://localhost:11434}
+      RUNRIGHT_AI_BASE_URL: ${RUNRIGHT_AI_BASE_URL:-}
       RUNRIGHT_AI_MODEL: ${RUNRIGHT_AI_MODEL:-llama3.1}
       # RAG / Embeddings (enables semantic search for AI assistant)
       RUNRIGHT_USE_RAG: ${RUNRIGHT_USE_RAG:-true}
-      RUNRIGHT_EMBEDDING_URL: ${RUNRIGHT_EMBEDDING_URL:-http://localhost:11434}
+      RUNRIGHT_EMBEDDING_URL: ${RUNRIGHT_EMBEDDING_URL:-}
       RUNRIGHT_EMBEDDING_MODEL: ${RUNRIGHT_EMBEDDING_MODEL:-nomic-embed-text}
       # SSO Provider credentials (set these to enable providers)
       # RUNRIGHT_SSO_GOOGLE_CLIENT_ID: ""
@@ -68,11 +68,11 @@ services:
       RUNRIGHT_BASE_URL: "http://localhost:8080"
       # AI Assistant
       RUNRIGHT_AI_PROVIDER: ${RUNRIGHT_AI_PROVIDER:-ollama}
-      RUNRIGHT_AI_BASE_URL: ${RUNRIGHT_AI_BASE_URL:-http://localhost:11434}
+      RUNRIGHT_AI_BASE_URL: ${RUNRIGHT_AI_BASE_URL:-}
       RUNRIGHT_AI_MODEL: ${RUNRIGHT_AI_MODEL:-llama3.1}
       # RAG / Embeddings
       RUNRIGHT_USE_RAG: ${RUNRIGHT_USE_RAG:-true}
-      RUNRIGHT_EMBEDDING_URL: ${RUNRIGHT_EMBEDDING_URL:-http://localhost:11434}
+      RUNRIGHT_EMBEDDING_URL: ${RUNRIGHT_EMBEDDING_URL:-}
       RUNRIGHT_EMBEDDING_MODEL: ${RUNRIGHT_EMBEDDING_MODEL:-nomic-embed-text}
       GIN_MODE: release
     depends_on:

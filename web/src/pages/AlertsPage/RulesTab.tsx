@@ -49,7 +49,7 @@ export default function RulesTab({ rules, settings, onRulesChange, onError, onNo
     repository: '',
     jobId: '',
     metric: 'max_cost_per_hour',
-    threshold: displayCostFromUSD(0.5, currency),
+    threshold: String(convertFromUSD(0.5, currency)),
     destinationIds: [],
   })
 
@@ -97,9 +97,8 @@ export default function RulesTab({ rules, settings, onRulesChange, onError, onNo
     if (thresholdDraftCurrency === currency) return
     setThresholdDraft((prev) => {
       if (prev.metric !== 'max_cost_per_hour') return prev
-      const usdValue = convertFromUSD(Number(prev.threshold), thresholdDraftCurrency)
-      const newDisplayValue = displayCostFromUSD(usdValue, currency)
-      return { ...prev, threshold: newDisplayValue }
+      const usdAmount = convertToUSD(Number(prev.threshold), thresholdDraftCurrency)
+      return { ...prev, threshold: String(convertFromUSD(usdAmount, currency)) }
     })
     setThresholdDraftCurrency(currency)
   }, [currency, thresholdDraftCurrency])
@@ -317,7 +316,7 @@ export default function RulesTab({ rules, settings, onRulesChange, onError, onNo
         repository: '',
         jobId: '',
         metric: 'max_cost_per_hour',
-        threshold: displayCostFromUSD(0.5, currency),
+        threshold: String(convertFromUSD(0.5, currency)),
         destinationIds: firstId ? [firstId] : [],
       })
       setEventDraft({
@@ -346,7 +345,7 @@ export default function RulesTab({ rules, settings, onRulesChange, onError, onNo
         jobId: rule.jobId,
         metric: rule.metric,
         threshold:
-          rule.metric === 'max_cost_per_hour' ? displayCostFromUSD(rule.threshold, currency) : String(rule.threshold),
+          rule.metric === 'max_cost_per_hour' ? String(convertFromUSD(rule.threshold, currency)) : String(rule.threshold),
         destinationIds: rule.destinationIds,
       })
     } else {
@@ -380,7 +379,7 @@ export default function RulesTab({ rules, settings, onRulesChange, onError, onNo
       jobId: '',
       scope: 'global',
       metric: 'max_cost_per_hour',
-      threshold: displayCostFromUSD(0.5, currency),
+      threshold: String(convertFromUSD(0.5, currency)),
       destinationIds: firstId ? [firstId] : [],
     }))
     setEventDraft((prev) => ({
@@ -537,7 +536,7 @@ export default function RulesTab({ rules, settings, onRulesChange, onError, onNo
                       setThresholdDraft((p) => ({
                         ...p,
                         metric: m,
-                        threshold: m === 'max_cost_per_hour' ? displayCostFromUSD(0.5, currency) : '80',
+                        threshold: m === 'max_cost_per_hour' ? String(convertFromUSD(0.5, currency)) : '80',
                       }))
                     }}
                   >
