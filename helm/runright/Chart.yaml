@@ -1,0 +1,16 @@
+apiVersion: v2
+name: runright
+description: Self-hosted CI resource monitor and machine sizing recommender
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - ci
+  - cost-optimization
+  - kubernetes
+  - monitoring
+home: https://github.com/gbudjeakp/run-right
+sources:
+  - https://github.com/gbudjeakp/run-right
+maintainers:
+  - name: sgbudje

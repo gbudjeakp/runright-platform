@@ -1,0 +1,87 @@
+/* ── Nav bar ──────────────────────────────────────────────────────────────── */
+.pnav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 48px;
+  height: 56px;
+  border-bottom: 1px solid var(--lp-border);
+  background: var(--lp-bg);
+}
+
+.pnav-logo {
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-size: 18px;
+  letter-spacing: 4px;
+  color: var(--lp-text);
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.pnav-right {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.pnav-link {
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: var(--lp-text-mid);
+  text-decoration: none;
+  transition: color .12s;
+  white-space: nowrap;
+}
+.pnav-link:hover { color: var(--lp-text); }
+
+.pnav-signin {
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: #FBF0DC;
+  background: #2C1A0E;
+  border: 1.5px solid #2C1A0E;
+  padding: 7px 18px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+  white-space: nowrap;
+}
+.pnav-signin:hover { background: #C23B22; border-color: #C23B22; }
+
+.pnav-theme {
+  background: none;
+  border: 1.5px solid var(--lp-border);
+  color: var(--lp-text-light);
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+  padding: 0;
+  flex-shrink: 0;
+}
+.pnav-theme:hover { border-color: var(--lp-text); color: var(--lp-text); }
+
+.pnav-github {
+  display: inline-flex !important;
+  align-items: center;
+  color: var(--lp-text-mid);
+  transition: color .12s;
+}
+.pnav-github:hover { color: var(--lp-text); }
+
+/* ── Mobile ───────────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .pnav { padding: 0 20px; }
+  .pnav-link.pnav-hide-mobile { display: none; }
+}

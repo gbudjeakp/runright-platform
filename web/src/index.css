@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root { min-height: 100%; }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+  /* Tailwind preflight strips button/input defaults. Restore sensible baseline
+     so elements without explicit classes don't look completely broken. */
+  button { cursor: pointer; }
+  input, select, textarea { font-family: inherit; font-size: inherit; }
+}
+
+@layer components {
+  /* Settings page form elements */
+  .settings-input {
+    @apply w-full px-3 py-2 text-sm rounded-md border border-[var(--border)] bg-white;
+    @apply focus:outline-none focus:ring-2 focus:ring-[var(--red)] focus:ring-opacity-30 focus:border-[var(--red)];
+    @apply transition-colors;
+  }
+  
+  .settings-select {
+    @apply px-3 py-2 text-sm rounded-md border border-[var(--border)] bg-[var(--paper)] text-[var(--text)];
+    @apply transition-colors appearance-none cursor-pointer pr-8;
+    border-bottom: 2px solid var(--border-dark);
+    outline: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%239A7B5A' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.6rem center;
+    background-size: 0.65rem;
+  }
+  .settings-select:focus {
+    border-color: var(--gold);
+    box-shadow: 0 2px 0 var(--gold);
+  }
+  
+  .settings-btn-primary {
+    @apply px-4 py-2 text-sm font-medium text-white rounded-md;
+    @apply bg-[var(--red)] hover:bg-[#c93030];
+    @apply focus:outline-none focus:ring-2 focus:ring-[var(--red)] focus:ring-offset-2;
+    @apply disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply transition-colors;
+  }
+  
+  .settings-btn-secondary {
+    @apply px-4 py-2 text-sm font-medium rounded-md;
+    @apply border border-[var(--border)] text-[var(--text-mid)] bg-white;
+    @apply hover:bg-[var(--bg-light)] hover:border-[var(--border-dark)];
+    @apply focus:outline-none focus:ring-2 focus:ring-[var(--red)] focus:ring-offset-2;
+    @apply disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply transition-colors;
+  }
+
+  /* Animations */
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  
+  .animate-fadeIn {
+    animation: fadeIn 0.2s ease-out;
+  }
+}

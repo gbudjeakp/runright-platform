@@ -1,0 +1,140 @@
+{
+  "title": "CI Compute Sizes",
+  "tags": ["runright", "ci"],
+  "schemaVersion": 39,
+  "editable": true,
+  "time": { "from": "now-7d", "to": "now" },
+  "timepicker": {},
+  "refresh": "5m",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Jobs per day",
+      "type": "barchart",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "options": {
+        "barWidth": 0.97,
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 80 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('day', start_time) AS \"time\", COUNT(*) AS \"runs\"\nFROM jobs\nWHERE status = 'completed' AND $__timeFilter(start_time)\nGROUP BY 1 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Avg CPU p95 by job name",
+      "type": "barchart",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "options": {
+        "barWidth": 0.97,
+        "xTickLabelRotation": 45,
+        "legend": { "displayMode": "list", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 80 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT job_id, ROUND(AVG((summary->>'cpu_percent_p95')::float)::numeric, 1) AS avg_cpu_p95\nFROM jobs\nWHERE status = 'completed' AND $__timeFilter(start_time)\nGROUP BY job_id ORDER BY avg_cpu_p95 DESC LIMIT 15"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "CI platform breakdown",
+      "type": "table",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "options": { "cellHeight": "sm", "showHeader": true },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "custom": { "align": "auto" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT COALESCE(summary->>'ci_platform', 'unknown') AS ci_platform, COUNT(*) AS runs\nFROM jobs\nWHERE $__timeFilter(start_time)\nGROUP BY 1 ORDER BY 2 DESC"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Average cost delta % by job (savings potential)",
+      "type": "table",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "options": { "cellHeight": "sm", "showHeader": true },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "custom": { "align": "auto" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT job_id, ROUND(AVG((recommendations->0->>'cost_delta_percent')::float)::numeric, 1) AS avg_cost_delta_pct\nFROM jobs\nWHERE status = 'completed' AND recommendations != '[]' AND $__timeFilter(start_time)\nGROUP BY job_id ORDER BY avg_cost_delta_pct ASC LIMIT 15"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Recent runs",
+      "type": "table",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "options": { "cellHeight": "sm", "showHeader": true },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "custom": { "align": "auto" } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT\n  start_time AS \"time\",\n  job_id,\n  COALESCE(summary->>'ci_platform', '-') AS ci,\n  summary->'detected_machine'->>'id' AS detected,\n  recommendations->0->'machine'->>'id' AS recommended,\n  ROUND((summary->>'cpu_percent_p95')::float::numeric, 1) AS cpu_p95,\n  ROUND((summary->>'mem_used_gib_p95')::float::numeric, 2) AS mem_p95_gib,\n  ROUND(duration_seconds::numeric, 0) AS duration_s,\n  status\nFROM jobs\nWHERE $__timeFilter(start_time)\nORDER BY start_time DESC LIMIT 50"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "P95 CPU over time per CI platform",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 8 },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "auto" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT\n  date_trunc('day', start_time) AS \"time\",\n  COALESCE(summary->>'ci_platform', 'unknown') AS metric,\n  ROUND(AVG((summary->>'cpu_percent_p95')::float)::numeric, 1) AS avg_cpu_p95\nFROM jobs\nWHERE status = 'completed' AND $__timeFilter(start_time)\nGROUP BY 1, 2 ORDER BY 1"
+        }
+      ]
+    }
+  ]
+}

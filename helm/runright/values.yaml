@@ -1,0 +1,73 @@
+# ── Image ─────────────────────────────────────────────────────────────────────
+image:
+  repository: ghcr.io/gbudjeakp/run-right
+  tag: ""          # defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+# ── Replica count ─────────────────────────────────────────────────────────────
+replicaCount: 1
+
+# ── Service ───────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 8080
+
+# ── Ingress ───────────────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: runright.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# ── Database (PostgreSQL) ─────────────────────────────────────────────────────
+postgresql:
+  # Set enabled: false and provide externalDSN to use an existing Postgres instance.
+  enabled: true
+  auth:
+    username: runright
+    password: runright
+    database: runright
+  primary:
+    persistence:
+      size: 5Gi
+
+# DSN used when postgresql.enabled is false.
+externalDSN: ""
+
+# ── RunRight configuration ────────────────────────────────────────────────────
+config:
+  apiKey: ""          # set via secret — leave empty to disable auth
+  logLevel: "info"
+
+# ── Secret reference (optional) ───────────────────────────────────────────────
+# Instead of setting config.apiKey directly, reference an existing secret:
+# existingSecret:
+#   name: runright-secret
+#   apiKeyKey: api-key
+
+# ── Resources ─────────────────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# ── Pod settings ──────────────────────────────────────────────────────────────
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

@@ -1,0 +1,9 @@
+{
+  "name": "runright-platform",
+  "private": true,
+  "scripts": {
+    "dev": "sh ./scripts/dev.sh",
+    "dev:web": "pnpm --dir web dev",
+    "dev:api": "RUNRIGHT_DISABLE_AUTH=true DATABASE_URL=postgres://runright:runright@localhost:5435/runright?sslmode=disable go run ./cmd/server serve --port 8080"
+  }
+}
