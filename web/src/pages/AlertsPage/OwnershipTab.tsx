@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { deleteOwnership, fetchOwnership, upsertOwnership } from '../../api'
 import type { NotificationSettings, OwnershipEntry } from '../../types'
+import { useUser } from '../../App'
 
 export interface OwnershipTabProps {
   settings: NotificationSettings
@@ -9,6 +10,8 @@ export interface OwnershipTabProps {
 }
 
 export default function OwnershipTab({ settings, onError, onNote }: OwnershipTabProps) {
+  const { can } = useUser()
+  const canWrite = can('ownership:manage')
   const [ownershipEntries, setOwnershipEntries] = useState<OwnershipEntry[]>([])
   const [busy, setBusy] = useState(false)
   const [newOwnershipRepo, setNewOwnershipRepo] = useState('')
@@ -153,7 +156,8 @@ export default function OwnershipTab({ settings, onError, onNote }: OwnershipTab
             No destinations configured yet. Add a Slack destination first in the Destinations tab.
           </p>
         )}
-        <button type="submit" className="btn-rr" disabled={busy || allDests.length === 0}>
+        <button type="submit" className="btn-rr" disabled={busy || allDests.length === 0 || !canWrite}
+          title={!canWrite ? 'Requires ownership:manage permission' : undefined}>
           Save Ownership Rule
         </button>
       </form>
@@ -189,9 +193,10 @@ export default function OwnershipTab({ settings, onError, onNote }: OwnershipTab
                   </div>
                   <button
                     type="button"
-                    className="flex-shrink-0 text-xs font-deco tracking-widest text-[var(--red)] border border-[var(--red)] px-3 py-1 rounded hover:bg-[rgba(194,59,34,.06)]"
+                    className="flex-shrink-0 text-xs font-deco tracking-widest text-[var(--red)] border border-[var(--red)] px-3 py-1 rounded hover:bg-[rgba(194,59,34,.06)] disabled:opacity-40 disabled:cursor-not-allowed"
                     onClick={() => void handleRemoveOwnership(entry.repository, entry.team_name)}
-                    disabled={busy}
+                    disabled={busy || !canWrite}
+                    title={!canWrite ? 'Requires ownership:manage permission' : undefined}
                   >
                     Remove
                   </button>
