@@ -121,6 +121,7 @@ export default function RepoDetailPage() {
   const { currency } = useCurrencyPreference()
   const { can } = useUser()
   const canManageJobs = can('jobs:manage')
+  const navigate = useNavigate()
   const location = useLocation()
   const [params] = useSearchParams()
   const repo     = params.get('repo') ?? ''
@@ -277,7 +278,7 @@ export default function RepoDetailPage() {
                       <td className="text-right">
                         <div className="flex gap-1 whitespace-nowrap justify-end">
                           {!j.archived && (
-                            <button title={snoozed ? 'Manage snooze' : 'Snooze stale alerts'}
+                            <button
                               onClick={() => setSnoozeTarget(j)}
                               disabled={!canManageJobs}
                               title={!canManageJobs ? 'Requires jobs:manage permission' : snoozed ? 'Manage snooze' : 'Snooze stale alerts'}
