@@ -9,3 +9,4 @@ FROM scratch
 COPY --from=builder /runright-server /runright-server
 EXPOSE 8080
 ENTRYPOINT ["/runright-server"]
+CMD ["serve"]

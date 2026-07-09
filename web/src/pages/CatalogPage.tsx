@@ -113,6 +113,7 @@ export default function CatalogPage() {
         <select className="rr-select flex-1 sm:flex-none" value={provider} onChange={(e) => { setProvider(e.target.value); setLoading(true) }}>
           <option value="">All providers</option>
           <option value="aws">AWS</option>
+          <option value="azure">Azure</option>
           <option value="gcp">GCP</option>
           <option value="github">GitHub</option>
         </select>

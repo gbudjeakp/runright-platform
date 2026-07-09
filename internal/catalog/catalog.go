@@ -17,6 +17,9 @@ var awsData []byte
 //go:embed data/gcp.json
 var gcpData []byte
 
+//go:embed data/azure.json
+var azureData []byte
+
 //go:embed data/github.json
 var githubData []byte
 
@@ -31,11 +34,16 @@ func init() {
 	if err := json.Unmarshal(gcpData, &gcp); err != nil {
 		panic(fmt.Sprintf("runright: failed to parse gcp catalog: %v", err))
 	}
+	var azure []types.MachineType
+	if err := json.Unmarshal(azureData, &azure); err != nil {
+		panic(fmt.Sprintf("runright: failed to parse azure catalog: %v", err))
+	}
 	var github []types.MachineType
 	if err := json.Unmarshal(githubData, &github); err != nil {
 		panic(fmt.Sprintf("runright: failed to parse github catalog: %v", err))
 	}
 	allMachines = append(aws, gcp...)
+	allMachines = append(allMachines, azure...)
 	allMachines = append(allMachines, github...)
 }
 
