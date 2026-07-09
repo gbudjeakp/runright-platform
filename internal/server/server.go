@@ -197,6 +197,11 @@ func New(cfg Config) (*Server, error) {
 		// Analytics & Reporting
 		v1.GET("/analytics/summary", s.getAnalyticsSummary)
 		v1.GET("/analytics/cost-breakdown", s.getCostBreakdown)
+		v1.GET("/analytics/carbon", s.getCarbonFootprint)
+
+		// Run History & Comparison
+		v1.GET("/runs/history", s.getRunHistory)
+		v1.GET("/runs/compare", s.compareRuns)
 
 		// Scheduled Reports
 		v1.GET("/reports", s.listScheduledReports)
@@ -214,6 +219,9 @@ func New(cfg Config) (*Server, error) {
 
 	// Badge endpoint — intentionally unauthenticated for embedding in READMEs.
 	r.GET("/badge/:jobId", s.getBadge)
+
+	// Public stats — intentionally unauthenticated for public dashboards and widgets.
+	r.GET("/api/v1/public/stats", s.getPublicStats)
 
 	// Health check — no auth required.
 	r.GET("/healthz", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })

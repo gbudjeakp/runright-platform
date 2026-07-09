@@ -1134,14 +1134,14 @@ func summarizeQuestion(q string) string {
 
 // QuickStats returns quick statistics for the assistant to reference.
 type QuickStats struct {
-	TotalJobs          int     `json:"total_jobs"`
-	TotalRepositories  int     `json:"total_repositories"`
-	TotalCostLast30d   float64 `json:"total_cost_last_30d"`
-	PotentialSavings   float64 `json:"potential_savings"`
-	TopSpendingRepo    string  `json:"top_spending_repo,omitempty"`
-	TopSpendingJob     string  `json:"top_spending_job,omitempty"`
-	AvgCPUUtilization  float64 `json:"avg_cpu_utilization"`
-	AvgMemUtilization  float64 `json:"avg_mem_utilization"`
+	TotalJobs         int     `json:"total_jobs"`
+	TotalRepositories int     `json:"total_repositories"`
+	TotalCostLast30d  float64 `json:"total_cost_last_30d"`
+	PotentialSavings  float64 `json:"potential_savings"`
+	TopSpendingRepo   string  `json:"top_spending_repo,omitempty"`
+	TopSpendingJob    string  `json:"top_spending_job,omitempty"`
+	AvgCPUUtilization float64 `json:"avg_cpu_utilization"`
+	AvgMemUtilization float64 `json:"avg_mem_utilization"`
 }
 
 // GetQuickStats returns dashboard-style quick stats.

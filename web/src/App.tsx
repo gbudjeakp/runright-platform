@@ -12,6 +12,7 @@ import AssistantPage from './pages/AssistantPage'
 import LoginPage from './pages/LoginPage'
 import ReposPage from './pages/ReposPage'
 import RepoDetailPage from './pages/RepoDetailPage'
+import RunHistoryPage from './pages/RunHistoryPage'
 import { logout, fetchCurrentUser } from './api'
 import type { CurrentUser } from './types'
 import LogoMark from './components/LogoMark'
@@ -99,6 +100,7 @@ function AppRoutes() {
           <Route path="catalog" element={<CatalogPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />
+          <Route path="history" element={<RunHistoryPage />} />
           <Route path="alerts" element={<AlertsPage />} />
           <Route path="policies" element={<PoliciesPage />} />
           <Route path="repos" element={<ReposPage />} />
@@ -207,6 +209,15 @@ const AnalyticsIcon = ({ className }: NavIconProps) => (
     <path d="M18 17V9"/>
     <path d="M13 17V5"/>
     <path d="M8 17v-3"/>
+  </svg>
+)
+
+const HistoryIcon = ({ className }: NavIconProps) => (
+  <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="9"/>
+    <polyline points="12 7 12 12 15 15"/>
+    <path d="M3 12h1"/>
+    <path d="M20 12h1"/>
   </svg>
 )
 
@@ -380,6 +391,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
         <SideLink to="/app/policies" onClick={closeMobile} collapsed={desktopCollapsed} icon={PolicyIcon}>Policy</SideLink>
         <SideLink to="/app/alerts" onClick={closeMobile} collapsed={desktopCollapsed} icon={AlertsIcon}>Alerts</SideLink>
         <SideLink to="/app/analytics" onClick={closeMobile} collapsed={desktopCollapsed} icon={AnalyticsIcon}>Analytics</SideLink>
+        <SideLink to="/app/history" onClick={closeMobile} collapsed={desktopCollapsed} icon={HistoryIcon}>Activity</SideLink>
         <SideLink to="/app/assistant" onClick={closeMobile} collapsed={desktopCollapsed} icon={AssistantIcon}>AI Assistant</SideLink>
         <SideLink to="/app/settings" onClick={closeMobile} collapsed={desktopCollapsed} icon={SettingsIcon}>Settings</SideLink>
 

@@ -7,7 +7,7 @@ docker compose up -d postgres >/dev/null
 
 RUNRIGHT_DISABLE_AUTH=true \
 DATABASE_URL='postgres://runright:runright@localhost:5435/runright?sslmode=disable' \
-go run ./cmd/runright serve --port 8080 &
+go run ./cmd/server serve --port 8080 &
 backend_pid=$!
 
 cleanup() {

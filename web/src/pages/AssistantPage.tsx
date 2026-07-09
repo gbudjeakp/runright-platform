@@ -175,10 +175,11 @@ export default function AssistantPage() {
     fetchAssistantStatus().then(setStatus).catch(() => setStatus({ configured: false }))
   }, [])
 
-  // Load data when configured
+  // Load data when status resolves
   useEffect(() => {
+    if (status === null) return
+    fetchConversations().then(setConversations).catch(console.error)
     if (status?.configured) {
-      fetchConversations().then(setConversations).catch(console.error)
       fetchSuggestedQuestions().then(setSuggestions).catch(console.error)
       fetchAssistantStats().then(setStats).catch(console.error)
     }

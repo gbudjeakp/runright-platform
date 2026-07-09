@@ -40,6 +40,13 @@ interface CostBreakdown {
   by_tier: { name: string; cost: number; percent: number }[]
 }
 
+interface CarbonMetrics {
+  total_kg_co2: number
+  saved_kg_co2: number
+  equivalent_tree_days: number
+  equivalent_car_miles: number
+}
+
 type Period = '7d' | '30d' | '90d' | '1y'
 
 function rangeToQuery(range: DateRange): string {
@@ -55,6 +62,7 @@ export default function AnalyticsPage() {
   const [dateRange, setDateRange] = useState<DateRange>(EMPTY_RANGE)
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null)
   const [breakdown, setBreakdown] = useState<CostBreakdown | null>(null)
+  const [carbon, setCarbon] = useState<CarbonMetrics | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -67,12 +75,14 @@ export default function AnalyticsPage() {
     setError('')
     const q = rangeToQuery(dateRange)
     try {
-      const [summaryRes, breakdownRes] = await Promise.all([
+      const [summaryRes, breakdownRes, carbonRes] = await Promise.all([
         fetch(`/api/v1/analytics/summary?${q}`, { credentials: 'include' }),
         fetch(`/api/v1/analytics/cost-breakdown?${q}`, { credentials: 'include' }),
+        fetch(`/api/v1/analytics/carbon?${q}`, { credentials: 'include' }),
       ])
       if (summaryRes.ok) setSummary(await summaryRes.json())
       if (breakdownRes.ok) setBreakdown(await breakdownRes.json())
+      if (carbonRes.ok) setCarbon(await carbonRes.json())
     } catch {
       setError('Failed to load analytics')
     } finally {
@@ -231,6 +241,40 @@ export default function AnalyticsPage() {
             No repository data available
           </div>
         )}
+      </Card>
+
+      {/* Carbon Footprint */}
+      <Card title="Carbon Footprint" className="mt-8">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <CarbonStat
+            label="Total CO₂"
+            value={`${(carbon?.total_kg_co2 ?? 0).toFixed(2)} kg`}
+            icon={<CloudIcon />}
+          />
+          <CarbonStat
+            label="CO₂ Saveable"
+            value={`${(carbon?.saved_kg_co2 ?? 0).toFixed(2)} kg`}
+            icon={<LeafIcon />}
+            highlight
+          />
+          <CarbonStat
+            label="Tree Days Equivalent"
+            value={`${(carbon?.equivalent_tree_days ?? 0).toFixed(0)} days`}
+            icon={<TreeIcon />}
+            subtext="of carbon absorption"
+          />
+          <CarbonStat
+            label="Car Miles Equivalent"
+            value={`${(carbon?.equivalent_car_miles ?? 0).toFixed(0)} mi`}
+            icon={<CarIcon />}
+            subtext="of driving avoided"
+          />
+        </div>
+        <div className="mt-6 text-xs text-[var(--text-light)] bg-[var(--cream-alt)] p-3 rounded-lg">
+          <strong>How we calculate:</strong> Carbon estimates use EPA emission factors per cloud provider
+          (AWS: 0.417, GCP: 0.180, Azure: 0.350 kg CO₂/kWh) and approximate power consumption based on vCPUs and memory.
+          Savings represent potential reductions from right-sizing to recommended machines.
+        </div>
       </Card>
     </div>
   )
@@ -444,6 +488,70 @@ function AvgIcon() {
       <path d="M18 17V9" />
       <path d="M13 17V5" />
       <path d="M8 17v-3" />
+    </svg>
+  )
+}
+
+// Carbon-related components and icons
+function CarbonStat({
+  label,
+  value,
+  subtext,
+  icon,
+  highlight = false,
+}: {
+  label: string
+  value: string
+  subtext?: string
+  icon: ReactNode
+  highlight?: boolean
+}) {
+  return (
+    <div className={`text-center p-4 rounded-lg ${highlight ? 'bg-green-50 dark:bg-green-950/20 border border-green-200' : 'bg-[var(--cream-alt)]'}`}>
+      <div className={`w-8 h-8 mx-auto mb-2 ${highlight ? 'text-green-600' : 'text-[var(--text-light)]'}`}>
+        {icon}
+      </div>
+      <div className={`text-xl font-bold ${highlight ? 'text-green-700' : 'text-[var(--text)]'}`}>
+        {value}
+      </div>
+      <div className="text-xs text-[var(--text-light)] mt-1">{label}</div>
+      {subtext && <div className="text-[10px] text-[var(--text-light)] opacity-70">{subtext}</div>}
+    </div>
+  )
+}
+
+function CloudIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
+    </svg>
+  )
+}
+
+function LeafIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z" />
+      <path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12" />
+    </svg>
+  )
+}
+
+function TreeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22v-7" />
+      <path d="m17 8-5-6-5 6h4v4H7l5 6 5-6h-4V8h4Z" />
+    </svg>
+  )
+}
+
+function CarIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2" />
+      <circle cx="7" cy="17" r="2" />
+      <circle cx="17" cy="17" r="2" />
     </svg>
   )
 }
