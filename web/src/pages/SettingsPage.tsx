@@ -65,7 +65,7 @@ export default function SettingsPage() {
     { id: 'team', label: 'Team', icon: <UsersIcon /> },
     { id: 'users', label: 'Users & Roles', icon: <UsersIcon /> },
     { id: 'roles', label: 'Roles & Permissions', icon: <ClipboardIcon /> },
-    { id: 'audit', label: 'Audit Log', icon: <ClipboardIcon /> },
+    ...(can('audit:view') ? [{ id: 'audit' as TabId, label: 'Audit Log', icon: <ClipboardIcon /> }] : []),
   ]
 
   return (
@@ -100,7 +100,11 @@ export default function SettingsPage() {
         {activeTab === 'team' && <TeamTab />}
         {activeTab === 'users' && <UsersTab />}
         {activeTab === 'roles' && <RolesTab />}
-        {activeTab === 'audit' && <AuditTab />}
+        {activeTab === 'audit' && (
+          can('audit:view')
+            ? <AuditTab />
+            : <div className="py-12 text-center text-[var(--text-light)] text-sm">You do not have permission to view the audit log.</div>
+        )}
       </div>
     </div>
   )

@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams, Link, useLocation } from 'react-router-do
 import { fetchRepoJobs, fetchIsolatedJobs, upsertJobMeta, deleteJobRuns } from '../api'
 import type { JobSummaryRow } from '../types'
 import { formatFromUSD, useCurrencyPreference } from '../currency'
+import { useUser } from '../App'
 
 function timeAgo(iso: string) {
   const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
@@ -118,6 +119,8 @@ function spotStyle(risk: string): React.CSSProperties {
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function RepoDetailPage() {
   const { currency } = useCurrencyPreference()
+  const { can } = useUser()
+  const canManageJobs = can('jobs:manage')
   const navigate = useNavigate()
   const location = useLocation()
   const [params] = useSearchParams()
@@ -275,18 +278,22 @@ export default function RepoDetailPage() {
                       <td className="text-right">
                         <div className="flex gap-1 whitespace-nowrap justify-end">
                           {!j.archived && (
-                            <button title={snoozed ? 'Manage snooze' : 'Snooze stale alerts'}
+                            <button
                               onClick={() => setSnoozeTarget(j)}
-                              className="border border-[var(--border)] rounded px-2 py-1 text-xs bg-transparent cursor-pointer hover:bg-[var(--cream-alt)] transition-colors whitespace-nowrap">
+                              disabled={!canManageJobs}
+                              title={!canManageJobs ? 'Requires jobs:manage permission' : snoozed ? 'Manage snooze' : 'Snooze stale alerts'}
+                              className="border border-[var(--border)] rounded px-2 py-1 text-xs bg-transparent cursor-pointer hover:bg-[var(--cream-alt)] transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed">
                               {snoozed ? 'Unsnooze' : 'Snooze'}
                             </button>
                           )}
-                          <button title={j.archived ? 'Unarchive' : 'Archive'} onClick={() => handleArchive(j)}
-                            className="border border-[var(--border)] rounded px-2 py-1 text-xs bg-transparent cursor-pointer hover:bg-[var(--cream-alt)] transition-colors whitespace-nowrap">
+                          <button title={!canManageJobs ? 'Requires jobs:manage permission' : j.archived ? 'Unarchive' : 'Archive'} onClick={() => handleArchive(j)}
+                            disabled={!canManageJobs}
+                            className="border border-[var(--border)] rounded px-2 py-1 text-xs bg-transparent cursor-pointer hover:bg-[var(--cream-alt)] transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed">
                             {j.archived ? 'Unarchive' : 'Archive'}
                           </button>
-                          <button title="Delete all runs" onClick={() => setConfirmDelete(j)}
-                            className="border border-[var(--border)] rounded px-2 py-1 text-xs bg-transparent cursor-pointer hover:bg-red/10 hover:border-red/40 transition-colors whitespace-nowrap">
+                          <button title={!canManageJobs ? 'Requires jobs:manage permission' : 'Delete all runs'} onClick={() => setConfirmDelete(j)}
+                            disabled={!canManageJobs}
+                            className="border border-[var(--border)] rounded px-2 py-1 text-xs bg-transparent cursor-pointer hover:bg-red/10 hover:border-red/40 transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed">
                             Delete
                           </button>
                         </div>
