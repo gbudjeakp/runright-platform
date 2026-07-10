@@ -19,6 +19,72 @@ export interface MachineType {
   tags: string[]
 }
 
+// ── Tier 3 Types ────────────────────────────────────────────────────────────
+export interface GPUSummary {
+  count: number
+  total_memory_gib: number
+  avg_utilization_pct: number
+  peak_utilization_pct: number
+  p95_utilization_pct: number
+  avg_memory_util_pct: number
+  peak_memory_util_pct: number
+  p95_memory_util_pct: number
+  avg_power_draw_w: number
+  peak_power_draw_w: number
+  idle_samples_pct: number
+  underutilized_pct: number
+  gpu_type?: string
+}
+
+export interface ContainerAggregates {
+  id: string
+  name: string
+  image?: string
+  cpu_percent_avg: number
+  cpu_percent_peak: number
+  cpu_percent_p95: number
+  memory_used_mib_avg: number
+  memory_used_mib_peak: number
+  memory_limit_mib?: number
+  net_rx_mb_total: number
+  net_tx_mb_total: number
+  block_read_mb_total: number
+  block_write_mb_total: number
+  sample_count: number
+}
+
+export interface ContainerSummary {
+  containers: ContainerAggregates[]
+  total_containers: number
+  top_cpu_container?: string
+  top_memory_container?: string
+}
+
+export interface CacheStats {
+  docker_layer_cache_hits?: number
+  docker_layer_cache_misses?: number
+  npm_cache_hit_rate?: number
+  pip_cache_hit_rate?: number
+  go_cache_hit_rate?: number
+  maven_cache_hit_rate?: number
+  gradle_cache_hit_rate?: number
+  ci_platform_cache_hit?: boolean
+  ci_platform_cache_size_bytes?: number
+  cache_restore_time_ms?: number
+  cache_save_time_ms?: number
+  overall_cache_hit_rate?: number
+  estimated_time_saved_sec?: number
+}
+
+export interface EgressSummary {
+  total_egress_gb: number
+  estimated_cost_usd: number
+  cost_per_run_usd: number
+  monthly_projected_usd: number
+  top_destinations?: { destination: string; egress_gb: number }[]
+  caching_recommendation?: string
+}
+
 export interface MetricsSummary {
   job_id: string
   start_time: string
@@ -44,6 +110,11 @@ export interface MetricsSummary {
   net_rx_mbs_peak: number
   net_tx_mbs_peak: number
   sample_count: number
+  // Tier 3 metrics
+  gpu?: GPUSummary
+  containers?: ContainerSummary
+  cache?: CacheStats
+  egress?: EgressSummary
 }
 
 export interface Recommendation {
@@ -333,4 +404,35 @@ export interface QuickStats {
   top_spending_job?: string
   avg_cpu_utilization: number
   avg_mem_utilization: number
+}
+
+// ── Run Comparison ──────────────────────────────────────────────────────────
+export interface RunSnapshot {
+  id: number
+  run_id: string
+  job_id: string
+  start_time: string
+  duration_seconds: number
+  cpu_percent_p95: number
+  mem_used_gib_p95: number
+  detected_machine?: string
+  top_recommend?: string
+  cost_delta_percent: number
+  est_carbon_kg: number
+}
+
+export interface DiffInsight {
+  type: 'warning' | 'improvement' | 'neutral'
+  message: string
+}
+
+export interface RunDiff {
+  before: RunSnapshot
+  after: RunSnapshot
+  cpu_delta_percent: number
+  memory_delta_gib: number
+  duration_delta_seconds: number
+  cost_delta_usd: number
+  carbon_delta_kg: number
+  insights: DiffInsight[]
 }

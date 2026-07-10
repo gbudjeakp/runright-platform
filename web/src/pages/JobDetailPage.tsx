@@ -6,7 +6,7 @@ import {
 } from 'recharts'
 import { fetchJob } from '../api'
 import { formatFromUSD, useCurrencyPreference } from '../currency'
-import type { Job, Recommendation } from '../types'
+import type { Job, Recommendation, GPUSummary, CacheStats, ContainerSummary, EgressSummary } from '../types'
 
 function TierBadge({ tier }: { tier: string }) {
   return <span className={`badge badge-${tier}`}>{tier}</span>
@@ -152,6 +152,177 @@ export default function JobDetailPage() {
           </div>
         )}
       </div>
+
+      {/* GPU Metrics - Tier 3 */}
+      {s.gpu && s.gpu.count > 0 && (
+        <div className="card">
+          <h2 className="flex items-center gap-2">
+            <span>🎮</span> GPU Metrics
+            <span className="badge badge-aws text-xs">TIER 3</span>
+          </h2>
+          <div className="stats-row" style={{ marginTop: 16 }}>
+            <div className="stat-card">
+              <div className="stat-label">GPUs</div>
+              <div className="stat-value">{s.gpu.count}</div>
+              {s.gpu.gpu_type && <div className="text-xs text-[var(--text-light)] mt-1">{s.gpu.gpu_type}</div>}
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Util P95</div>
+              <div className="stat-value">{s.gpu.p95_utilization_pct?.toFixed(1)}<span className="stat-unit">%</span></div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Mem P95</div>
+              <div className="stat-value">{s.gpu.p95_memory_util_pct?.toFixed(1)}<span className="stat-unit">%</span></div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Peak Power</div>
+              <div className="stat-value">{s.gpu.peak_power_draw_w?.toFixed(0)}<span className="stat-unit">W</span></div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Idle Samples</div>
+              <div className={`stat-value ${s.gpu.idle_samples_pct > 20 ? 'text-amber-600' : ''}`}>
+                {s.gpu.idle_samples_pct?.toFixed(1)}<span className="stat-unit">%</span>
+              </div>
+            </div>
+          </div>
+          {s.gpu.idle_samples_pct > 20 && (
+            <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800">
+              ⚠️ GPU was idle {s.gpu.idle_samples_pct.toFixed(0)}% of the time. Consider a smaller GPU instance or batching workloads.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Cache Stats - Tier 3 */}
+      {s.cache && (s.cache.overall_cache_hit_rate || s.cache.npm_cache_hit_rate || s.cache.go_cache_hit_rate) && (
+        <div className="card">
+          <h2 className="flex items-center gap-2">
+            <span>📦</span> Build Cache
+            <span className="badge badge-gcp text-xs">TIER 3</span>
+          </h2>
+          <div className="stats-row" style={{ marginTop: 16 }}>
+            {s.cache.overall_cache_hit_rate !== undefined && s.cache.overall_cache_hit_rate > 0 && (
+              <div className="stat-card">
+                <div className="stat-label">Overall Hit Rate</div>
+                <div className={`stat-value ${s.cache.overall_cache_hit_rate > 70 ? 'text-green-600' : s.cache.overall_cache_hit_rate > 40 ? 'text-amber-600' : 'text-red-600'}`}>
+                  {(s.cache.overall_cache_hit_rate * 100).toFixed(0)}<span className="stat-unit">%</span>
+                </div>
+              </div>
+            )}
+            {s.cache.npm_cache_hit_rate !== undefined && s.cache.npm_cache_hit_rate > 0 && (
+              <div className="stat-card">
+                <div className="stat-label">npm</div>
+                <div className="stat-value">{(s.cache.npm_cache_hit_rate * 100).toFixed(0)}<span className="stat-unit">%</span></div>
+              </div>
+            )}
+            {s.cache.go_cache_hit_rate !== undefined && s.cache.go_cache_hit_rate > 0 && (
+              <div className="stat-card">
+                <div className="stat-label">Go modules</div>
+                <div className="stat-value">{(s.cache.go_cache_hit_rate * 100).toFixed(0)}<span className="stat-unit">%</span></div>
+              </div>
+            )}
+            {s.cache.pip_cache_hit_rate !== undefined && s.cache.pip_cache_hit_rate > 0 && (
+              <div className="stat-card">
+                <div className="stat-label">pip</div>
+                <div className="stat-value">{(s.cache.pip_cache_hit_rate * 100).toFixed(0)}<span className="stat-unit">%</span></div>
+              </div>
+            )}
+            {s.cache.maven_cache_hit_rate !== undefined && s.cache.maven_cache_hit_rate > 0 && (
+              <div className="stat-card">
+                <div className="stat-label">Maven</div>
+                <div className="stat-value">{(s.cache.maven_cache_hit_rate * 100).toFixed(0)}<span className="stat-unit">%</span></div>
+              </div>
+            )}
+            {s.cache.gradle_cache_hit_rate !== undefined && s.cache.gradle_cache_hit_rate > 0 && (
+              <div className="stat-card">
+                <div className="stat-label">Gradle</div>
+                <div className="stat-value">{(s.cache.gradle_cache_hit_rate * 100).toFixed(0)}<span className="stat-unit">%</span></div>
+              </div>
+            )}
+            {s.cache.estimated_time_saved_sec !== undefined && s.cache.estimated_time_saved_sec > 0 && (
+              <div className="stat-card">
+                <div className="stat-label">Time Saved</div>
+                <div className="stat-value text-green-600">{s.cache.estimated_time_saved_sec.toFixed(0)}<span className="stat-unit">s</span></div>
+              </div>
+            )}
+          </div>
+          {s.cache.ci_platform_cache_hit && (
+            <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded text-sm text-green-800">
+              ✅ CI platform cache hit detected — your dependencies were restored from cache.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Container Breakdown - Tier 3 */}
+      {s.containers && s.containers.total_containers > 0 && (
+        <div className="card">
+          <h2 className="flex items-center gap-2">
+            <span>🐳</span> Container Breakdown
+            <span className="badge badge-github text-xs">TIER 3</span>
+          </h2>
+          <div className="text-sm text-[var(--text-light)] mt-2 mb-4">
+            {s.containers.total_containers} container{s.containers.total_containers > 1 ? 's' : ''} detected
+            {s.containers.top_cpu_container && <span className="ml-2">• Top CPU: <code>{s.containers.top_cpu_container}</code></span>}
+            {s.containers.top_memory_container && <span className="ml-2">• Top Memory: <code>{s.containers.top_memory_container}</code></span>}
+          </div>
+          <div className="table-wrap">
+            <table className="rr-table text-sm">
+              <thead>
+                <tr>
+                  <th>Container</th>
+                  <th>CPU Avg</th>
+                  <th>CPU P95</th>
+                  <th>Mem Avg</th>
+                  <th>Mem Peak</th>
+                  <th>Net I/O</th>
+                </tr>
+              </thead>
+              <tbody>
+                {s.containers.containers.slice(0, 10).map((c, i) => (
+                  <tr key={i}>
+                    <td><code className="text-xs">{c.name || c.id.slice(0, 12)}</code></td>
+                    <td>{c.cpu_percent_avg.toFixed(1)}%</td>
+                    <td>{c.cpu_percent_p95.toFixed(1)}%</td>
+                    <td>{(c.memory_used_mib_avg / 1024).toFixed(2)} GiB</td>
+                    <td>{(c.memory_used_mib_peak / 1024).toFixed(2)} GiB</td>
+                    <td className="text-xs">{c.net_rx_mb_total.toFixed(1)}↓ {c.net_tx_mb_total.toFixed(1)}↑ MB</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Egress Estimation - Tier 3 */}
+      {s.egress && s.egress.total_egress_gb > 0 && (
+        <div className="card">
+          <h2 className="flex items-center gap-2">
+            <span>🌐</span> Network Egress
+            <span className="badge badge-aws text-xs">TIER 3</span>
+          </h2>
+          <div className="stats-row" style={{ marginTop: 16 }}>
+            <div className="stat-card">
+              <div className="stat-label">Total Egress</div>
+              <div className="stat-value">{s.egress.total_egress_gb.toFixed(2)}<span className="stat-unit">GB</span></div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Est. Cost/Run</div>
+              <div className="stat-value">{formatFromUSD(s.egress.cost_per_run_usd, currency)}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Monthly Projected</div>
+              <div className="stat-value">{formatFromUSD(s.egress.monthly_projected_usd, currency)}</div>
+            </div>
+          </div>
+          {s.egress.caching_recommendation && (
+            <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
+              💡 {s.egress.caching_recommendation}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* CPU chart */}
       <div className="card">
