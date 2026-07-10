@@ -54,7 +54,9 @@ type Role struct {
 //   - Unknown / no match      → "viewer" (deny writes by default)
 func (s *Server) getUserRole(ctx context.Context, c *gin.Context) string {
 	email := getUserEmail(c)
-	if email == "system" || email == "" {
+	// No email (unauthenticated), the internal "system" actor, or the dev-bypass
+	// placeholder set by authMiddleware when no API key is configured → full owner access.
+	if email == "system" || email == "" || email == "dev@runright.io" {
 		return "owner"
 	}
 

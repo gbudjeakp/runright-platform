@@ -188,7 +188,7 @@ function GeneralTab() {
           
           <div className="flex items-center gap-4">
             <button type="submit" className="settings-btn-primary">Save Changes</button>
-            {saved && <span className="text-sm text-green-600">Saved!</span>}
+            {saved && <span className="text-sm text-green-600 dark:text-green-400">Saved!</span>}
           </div>
         </form>
       </Card>
@@ -381,7 +381,7 @@ function SSOTab() {
               {configs.map(config => (
                 <div key={config.id} className="py-4 flex items-center justify-between">
                   <div className="flex items-center gap-4">
-                    <div className={`w-2 h-2 rounded-full ${config.enabled ? 'bg-green-500' : 'bg-gray-300'}`} />
+                    <div className={`w-2 h-2 rounded-full ${config.enabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'}`} />
                     <div>
                       <div className="font-medium text-[var(--text)]">{config.name}</div>
                       <div className="text-sm text-[var(--text-light)]">
@@ -1279,7 +1279,7 @@ function LoadingState() {
 }
 
 function ErrorMessage({ message }: { message: string }) {
-  return <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-4 py-3">{message}</div>
+  return <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-4 py-3">{message}</div>
 }
 
 function EmptyState({ icon, message, action }: { icon: React.ReactNode; message: string; action?: React.ReactNode }) {
