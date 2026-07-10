@@ -1064,30 +1064,66 @@ func (a *Assistant) callOpenAILegacy(ctx context.Context, memorySummary string, 
 	return result.Choices[0].Message.Content, nil
 }
 
-// callAnthropic calls the Anthropic Messages API.
+// callAnthropic calls the Anthropic Messages API with tool support.
 func (a *Assistant) callAnthropic(ctx context.Context, memorySummary string, history []types.ChatMessage, assistantCtx *types.AssistantContext, userMessage string) (string, error) {
-	type content struct {
+	// Anthropic content types
+	type textContent struct {
 		Type string `json:"type"`
-		Text string `json:"text"`
+		Text string `json:"text,omitempty"`
+	}
+	type toolUseContent struct {
+		Type  string          `json:"type"`
+		ID    string          `json:"id"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
+	}
+	type toolResultContent struct {
+		Type      string `json:"type"`
+		ToolUseID string `json:"tool_use_id"`
+		Content   string `json:"content"`
 	}
 	type message struct {
-		Role    string    `json:"role"`
-		Content []content `json:"content"`
+		Role    string        `json:"role"`
+		Content []interface{} `json:"content"`
+	}
+	type toolSchema struct {
+		Name        string      `json:"name"`
+		Description string      `json:"description"`
+		InputSchema interface{} `json:"input_schema"`
 	}
 	type request struct {
-		Model     string    `json:"model"`
-		System    string    `json:"system"`
-		Messages  []message `json:"messages"`
-		MaxTokens int       `json:"max_tokens"`
+		Model     string       `json:"model"`
+		System    string       `json:"system"`
+		Messages  []message    `json:"messages"`
+		Tools     []toolSchema `json:"tools,omitempty"`
+		MaxTokens int          `json:"max_tokens"`
+	}
+	type responseContent struct {
+		Type  string          `json:"type"`
+		Text  string          `json:"text,omitempty"`
+		ID    string          `json:"id,omitempty"`
+		Name  string          `json:"name,omitempty"`
+		Input json.RawMessage `json:"input,omitempty"`
 	}
 	type response struct {
-		Content []content `json:"content"`
-		Error   *struct {
+		Content    []responseContent `json:"content"`
+		StopReason string            `json:"stop_reason"`
+		Error      *struct {
 			Message string `json:"message"`
 		} `json:"error,omitempty"`
 	}
 
-	// Build system prompt: base + memory summary + semantic context + data.
+	// Convert our tools to Anthropic format
+	var anthropicTools []toolSchema
+	for _, t := range a.AvailableTools() {
+		anthropicTools = append(anthropicTools, toolSchema{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.Parameters,
+		})
+	}
+
+	// Build system prompt
 	var systemParts []string
 	systemParts = append(systemParts, a.systemPrompt())
 	if memorySummary != "" {
@@ -1096,78 +1132,128 @@ func (a *Assistant) callAnthropic(ctx context.Context, memorySummary string, his
 	if assistantCtx.SemanticContext != "" {
 		systemParts = append(systemParts, "RELEVANT CONTEXT (semantic search):\n"+assistantCtx.SemanticContext)
 	}
-	// RunRight metrics — formatted as readable text so the model can reason about numbers.
 	systemParts = append(systemParts, "Current RunRight data:\n"+formatContextAsText(assistantCtx))
 	systemPrompt := strings.Join(systemParts, "\n\n")
 
-	// Build messages — verbatim recent history (budget-trimmed upstream).
+	// Build initial messages
 	var messages []message
 	for _, h := range history {
 		if h.Role == "user" || h.Role == "assistant" {
 			messages = append(messages, message{
 				Role:    h.Role,
-				Content: []content{{Type: "text", Text: h.Content}},
+				Content: []interface{}{textContent{Type: "text", Text: h.Content}},
 			})
 		}
 	}
 	messages = append(messages, message{
 		Role:    "user",
-		Content: []content{{Type: "text", Text: userMessage}},
+		Content: []interface{}{textContent{Type: "text", Text: userMessage}},
 	})
 
-	reqBody := request{
-		Model:     a.cfg.Model,
-		System:    systemPrompt,
-		Messages:  messages,
-		MaxTokens: 2048,
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", a.cfg.APIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var result response
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
-	}
-
-	if result.Error != nil {
-		return "", fmt.Errorf("Anthropic API error: %s", result.Error.Message)
-	}
-
-	if len(result.Content) == 0 {
-		return "", fmt.Errorf("no response from Anthropic")
-	}
-
-	// Concatenate all text content
-	var sb strings.Builder
-	for _, c := range result.Content {
-		if c.Type == "text" {
-			sb.WriteString(c.Text)
+	// Tool execution loop
+	for iteration := 0; iteration < 5; iteration++ {
+		reqBody := request{
+			Model:     a.cfg.Model,
+			System:    systemPrompt,
+			Messages:  messages,
+			Tools:     anthropicTools,
+			MaxTokens: 2048,
 		}
+
+		body, err := json.Marshal(reqBody)
+		if err != nil {
+			return "", err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", a.cfg.APIKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+
+		resp, err := a.client.Do(req)
+		if err != nil {
+			return "", err
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return "", err
+		}
+
+		var result response
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return "", fmt.Errorf("parse response: %w", err)
+		}
+
+		if result.Error != nil {
+			return "", fmt.Errorf("Anthropic API error: %s", result.Error.Message)
+		}
+
+		// Check if we have tool uses
+		var toolUses []responseContent
+		var textParts []string
+		for _, c := range result.Content {
+			if c.Type == "tool_use" {
+				toolUses = append(toolUses, c)
+			} else if c.Type == "text" {
+				textParts = append(textParts, c.Text)
+			}
+		}
+
+		// If no tool uses or stop reason is end_turn, return text
+		if len(toolUses) == 0 || result.StopReason == "end_turn" {
+			return strings.Join(textParts, ""), nil
+		}
+
+		// Add assistant message with tool uses
+		var assistantContent []interface{}
+		for _, c := range result.Content {
+			if c.Type == "text" {
+				assistantContent = append(assistantContent, textContent{Type: "text", Text: c.Text})
+			} else if c.Type == "tool_use" {
+				assistantContent = append(assistantContent, toolUseContent{
+					Type:  "tool_use",
+					ID:    c.ID,
+					Name:  c.Name,
+					Input: c.Input,
+				})
+			}
+		}
+		messages = append(messages, message{Role: "assistant", Content: assistantContent})
+
+		// Execute tools and add results
+		var toolResults []interface{}
+		for _, tu := range toolUses {
+			toolCall := ToolCall{
+				ID:        tu.ID,
+				Name:      tu.Name,
+				Arguments: tu.Input,
+			}
+
+			toolResult, err := a.ExecuteTool(ctx, toolCall, "assistant", "")
+			resultContent := ""
+			if err != nil {
+				resultContent = fmt.Sprintf("Error: %s", err.Error())
+			} else if !toolResult.Success {
+				resultContent = "Error: " + toolResult.Error
+			} else {
+				resultContent = toolResult.Result
+			}
+
+			toolResults = append(toolResults, toolResultContent{
+				Type:      "tool_result",
+				ToolUseID: tu.ID,
+				Content:   resultContent,
+			})
+		}
+		messages = append(messages, message{Role: "user", Content: toolResults})
 	}
 
-	return sb.String(), nil
+	return "", fmt.Errorf("max tool iterations exceeded")
 }
 
 // Database operations
