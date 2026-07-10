@@ -229,7 +229,7 @@ func TestCallOllama_Success(t *testing.T) {
 		Repositories: []string{"repo1", "repo2", "repo3", "repo4", "repo5"},
 	}
 
-	response, err := a.callOllama(ctx, "", history, assistantCtx, "How many repos?")
+	response, err := a.callLLM(ctx, "", history, assistantCtx, "How many repos?", "")
 	if err != nil {
 		t.Fatalf("callOllama failed: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestCallOllama_Error(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	_, err := a.callOllama(ctx, "", nil, &types.AssistantContext{}, "test")
+	_, err := a.callLLM(ctx, "", nil, &types.AssistantContext{}, "test", "")
 	if err == nil {
 		t.Error("expected error for model not found")
 	}
@@ -268,7 +268,7 @@ func TestCallOllama_ConnectionError(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	_, err := a.callOllama(ctx, "", nil, &types.AssistantContext{}, "test")
+	_, err := a.callLLM(ctx, "", nil, &types.AssistantContext{}, "test", "")
 	if err == nil {
 		t.Error("expected connection error")
 	}
@@ -300,7 +300,7 @@ func TestCallOllama_ContextTruncation(t *testing.T) {
 		largeContext.Repositories[i] = "very-long-repository-name-that-takes-up-space-" + string(rune('a'+i%26))
 	}
 
-	_, err := a.callOllama(context.Background(), "", nil, largeContext, "test")
+	_, err := a.callLLM(context.Background(), "", nil, largeContext, "test", "")
 	if err != nil {
 		t.Fatalf("callOllama failed: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestCallOllama_History(t *testing.T) {
 		{Role: "assistant", Content: "Second answer"},
 	}
 
-	_, err := a.callOllama(context.Background(), "", history, &types.AssistantContext{}, "Third question")
+	_, err := a.callLLM(context.Background(), "", history, &types.AssistantContext{}, "Third question", "")
 	if err != nil {
 		t.Fatalf("callOllama failed: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestCallOllama_MemorySummaryInjected(t *testing.T) {
 	a := New(nil, Config{Provider: ProviderOllama, BaseURL: server.URL, Model: "llama3.1"})
 
 	summary := "User asked about repo1 costs; assistant said $120/month."
-	_, err := a.callOllama(context.Background(), summary, nil, &types.AssistantContext{}, "Follow-up question")
+	_, err := a.callLLM(context.Background(), summary, nil, &types.AssistantContext{}, "Follow-up question", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
