@@ -221,3 +221,161 @@ export const deleteConversation = (id: string): Promise<void> =>
 
 export const deleteAllConversations = (): Promise<{ deleted: number }> =>
   api.delete<{ deleted: number }>('/assistant/conversations').then((r) => r.data)
+
+// ── Label Mappings & Auto-PR API ────────────────────────────────────────────
+
+export interface LabelMapping {
+  id: string
+  team_id?: string
+  repository: string
+  label: string
+  provider: string
+  instance_type: string
+  vcpus: number
+  memory_gib: number
+  cost_per_hour: number
+  is_gpu: boolean
+  gpu_type?: string
+  gpu_count?: number
+  gpu_memory_gib?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AutoPRSettings {
+  team_id?: string
+  enabled: boolean
+  min_savings_percent: number
+  min_monthly_savings: number
+  require_consecutive_runs: number
+  gpu_prs_enabled: boolean
+  gpu_min_savings_percent: number
+  exclude_repositories: string[]
+  exclude_job_patterns: string[]
+}
+
+export interface PRRecommendation {
+  id: string
+  team_id?: string
+  repository: string
+  job_id: string
+  workflow_file?: string
+  current_label: string
+  current_vcpus: number
+  current_memory_gib: number
+  current_cost_per_hour: number
+  recommended_label: string
+  recommended_vcpus: number
+  recommended_memory_gib: number
+  recommended_cost_per_hour: number
+  p95_cpu_percent: number
+  p95_mem_percent: number
+  run_count: number
+  consecutive_underutilized: number
+  is_gpu_job: boolean
+  current_gpu_type?: string
+  recommended_gpu_type?: string
+  p95_gpu_util_percent?: number
+  p95_gpu_mem_percent?: number
+  savings_percent: number
+  monthly_savings_usd: number
+  status: string
+  pr_url?: string
+  pr_number?: number
+  dismissed_reason?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface GPUTier {
+  type: string
+  name: string
+  memory_gib: number
+  cost_per_hour: number
+  provider: string
+}
+
+export interface PRHistory {
+  id: string
+  recommendation_id?: string
+  team_id?: string
+  repository: string
+  job_id: string
+  pr_number: number
+  pr_url: string
+  old_label: string
+  new_label: string
+  savings_percent: number
+  monthly_savings_usd: number
+  is_gpu_job: boolean
+  status: string
+  created_at: string
+  merged_at?: string
+  closed_at?: string
+}
+
+// Label Mappings
+export const fetchLabelMappings = (gpuOnly = false, repository?: string): Promise<LabelMapping[]> =>
+  api.get<LabelMapping[]>('/labels', { 
+    params: { 
+      ...(gpuOnly ? { gpu: 'true' } : {}),
+      ...(repository ? { repository } : {})
+    } 
+  }).then((r) => r.data ?? [])
+
+export const upsertLabelMapping = (mapping: Partial<LabelMapping>): Promise<{ id: string }> =>
+  api.put<{ id: string; status: string }>('/labels', mapping).then((r) => r.data)
+
+export const deleteLabelMapping = (id: string): Promise<void> =>
+  api.delete(`/labels/${id}`).then(() => undefined)
+
+// Auto-PR Settings
+export const fetchAutoPRSettings = (): Promise<AutoPRSettings> =>
+  api.get<AutoPRSettings>('/auto-pr/settings').then((r) => r.data)
+
+export const upsertAutoPRSettings = (settings: Partial<AutoPRSettings>): Promise<void> =>
+  api.put('/auto-pr/settings', settings).then(() => undefined)
+
+// PR Recommendations
+export const fetchPRRecommendations = (status = 'pending', gpuOnly = false): Promise<PRRecommendation[]> =>
+  api.get<PRRecommendation[]>('/auto-pr/recommendations', { 
+    params: { status, ...(gpuOnly ? { gpu: 'true' } : {}) } 
+  }).then((r) => r.data ?? [])
+
+export const createPRRecommendation = (rec: Partial<PRRecommendation>): Promise<{ id: string }> =>
+  api.post<{ id: string; status: string }>('/auto-pr/recommendations', rec).then((r) => r.data)
+
+export const approvePRRecommendation = (id: string): Promise<{ status: string; pr_url?: string; pr_number?: number }> =>
+  api.post<{ status: string; pr_url?: string; pr_number?: number }>(`/auto-pr/recommendations/${id}/approve`).then((r) => r.data)
+
+export const dismissPRRecommendation = (id: string, reason: string): Promise<void> =>
+  api.post(`/auto-pr/recommendations/${id}/dismiss`, { reason }).then(() => undefined)
+
+// PR History
+export const fetchPRHistory = (status?: string, gpuOnly = false): Promise<PRHistory[]> =>
+  api.get<PRHistory[]>('/auto-pr/history', { 
+    params: { 
+      ...(status ? { status } : {}),
+      ...(gpuOnly ? { gpu: 'true' } : {})
+    } 
+  }).then((r) => r.data ?? [])
+
+// GPU Analysis
+export const fetchGPUTiers = (): Promise<GPUTier[]> =>
+  api.get<GPUTier[]>('/gpu/tiers').then((r) => r.data ?? [])
+
+export const getGPURecommendation = (params: {
+  current_gpu: string
+  p95_util_percent: number
+  p95_mem_percent: number
+  peak_memory_gib: number
+  avg_duration_sec: number
+  runs_per_month: number
+}): Promise<{
+  current_gpu: string
+  recommended_gpu: string
+  reason: string
+  savings_percent: number
+  monthly_savings_usd: number
+  action: string
+}> => api.post('/gpu/recommendation', params).then((r) => r.data)

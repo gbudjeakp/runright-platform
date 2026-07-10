@@ -4,6 +4,8 @@ import { convertFromUSD, convertToUSD, useCurrencyPreference } from '../currency
 import type { JobSummaryRow, PolicyRule, RepoSummary } from '../types'
 import { useUser } from '../App'
 import { ConfirmModal } from '../components/ConfirmModal'
+import { usePagination } from '../hooks/usePagination'
+import { ListControls } from '../components/ListControls'
 
 export default function PoliciesPage() {
   const { can } = useUser()
@@ -40,6 +42,15 @@ export default function PoliciesPage() {
   const [showPolicyRepoSuggestions, setShowPolicyRepoSuggestions] = useState(false)
   const [showPolicyJobSuggestions, setShowPolicyJobSuggestions] = useState(false)
   const [showFilterRepoSuggestions, setShowFilterRepoSuggestions] = useState(false)
+
+  // Pagination for policies list
+  const pagination = usePagination({
+    items: policies,
+    pageSize: 10,
+    searchFn: (rule, query) =>
+      (rule.repository?.toLowerCase().includes(query) ?? false) ||
+      (rule.job_id?.toLowerCase().includes(query) ?? false),
+  })
 
   useEffect(() => {
     void (async () => {
@@ -447,8 +458,13 @@ export default function PoliciesPage() {
             <div className="empty text-base">No policies configured yet.</div>
           ) : (
             <>
+            <ListControls 
+              pagination={pagination} 
+              searchPlaceholder="Search policies..."
+              className="mb-4"
+            />
             <div className="sm:hidden space-y-3 mb-4">
-              {policies.map((rule) => (
+              {pagination.paginatedItems.map((rule) => (
                 <div key={`${rule.repository}::${rule.job_id}`} className="bg-paper border border-[var(--border)] rounded-lg px-4 py-3 shadow-rr">
                   <div className="font-sans font-semibold text-sm text-[var(--text)] break-all">
                     {rule.repository || 'Global'}{rule.job_id ? <span className="text-[var(--text-light)]"> / {rule.job_id}</span> : null}
@@ -483,7 +499,7 @@ export default function PoliciesPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {policies.map((rule) => (
+                  {pagination.paginatedItems.map((rule) => (
                     <tr key={`${rule.repository}::${rule.job_id}`}>
                       <td>
                         {rule.repository || 'Global'}

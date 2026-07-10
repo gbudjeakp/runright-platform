@@ -26,6 +26,7 @@ services:
     environment:
       DATABASE_URL: postgres://runright:runright@postgres:5432/runright?sslmode=disable
       RUNRIGHT_API_KEY: ${RUNRIGHT_API_KEY:-}
+      RUNRIGHT_DISABLE_AUTH: "true"
       RUNRIGHT_SSO_ENABLED: "true"
       RUNRIGHT_BASE_URL: "http://localhost:8080"
       # AI Assistant (Ollama)

@@ -5,6 +5,7 @@ import { DateRangePicker, inDateRange, EMPTY_RANGE } from '../components/DateRan
 import type { DateRange } from '../components/DateRangePicker'
 import { useDebounce } from '../hooks/useDebounce'
 import { useCurrencyPreference } from '../currency'
+import { usePageData } from '../contexts/PageDataContext'
 import SavingsBanner from './JobsPage/SavingsBanner'
 import SavingsChart from './JobsPage/SavingsChart'
 import JobsTable from './JobsPage/JobsTable'
@@ -14,6 +15,7 @@ import type { SortKey } from './JobsPage/types'
 
 export default function JobsPage() {
   const { currency } = useCurrencyPreference()
+  const { setPageData, clearPageData } = usePageData()
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -141,6 +143,24 @@ export default function JobsPage() {
       avgWastePercent,
     }
   }, [filtered])
+
+  // Provide summary data to the AI assistant context
+  useEffect(() => {
+    setPageData({
+      total_jobs: savingsSnapshot.totalJobs,
+      jobs_with_savings: savingsSnapshot.jobsWithSavings,
+      estimated_monthly_spend: savingsSnapshot.estimatedCurrentMonthlySpend,
+      estimated_monthly_savings: savingsSnapshot.estimatedMonthlySavings,
+      projected_annual_savings: savingsSnapshot.projectedAnnualSavings,
+      avg_waste_percent: savingsSnapshot.avgWastePercent,
+      filters_applied: {
+        search: debouncedSearch || null,
+        repository: repository || null,
+        tier: tier || null,
+      },
+    })
+    return () => clearPageData()
+  }, [savingsSnapshot, setPageData, clearPageData, debouncedSearch, repository, tier])
 
   const savingsHistory = useMemo<SavingsHistoryPoint[]>(() => {
     const byDay = new Map<string, { monthly: number; jobs: Set<string> }>()

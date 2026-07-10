@@ -5,6 +5,8 @@ import type { JobSummaryRow, PolicyRule, RepoSummary, NotificationSettings } fro
 import type { AlertRule, EventRuleDraft, ThresholdRuleDraft, SlackDestination } from '../AlertsPage/types'
 import { useUser } from '../../App'
 import { ConfirmModal } from '../../components/ConfirmModal'
+import { usePagination } from '../../hooks/usePagination'
+import { ListControls } from '../../components/ListControls'
 import {
   eventDescription,
   eventLabel,
@@ -41,7 +43,6 @@ export default function RulesTab({ rules, settings, onRulesChange, onError, onNo
   const [policies, setPolicies] = useState<PolicyRule[]>([])
   const [busy, setBusy] = useState(false)
   const [thresholdDraftCurrency, setThresholdDraftCurrency] = useState(currency)
-  const [rulesSearchQuery, setRulesSearchQuery] = useState('')
 
   const [thresholdDraft, setThresholdDraft] = useState<ThresholdRuleDraft>({
     name: '',
@@ -197,6 +198,18 @@ export default function RulesTab({ rules, settings, onRulesChange, onError, onNo
 
   const destinationNames = (ids: string[]): string =>
     ids.map((id) => allDestinations.find((d) => d.id === id)?.name ?? id).join(', ') || '—'
+
+  // Pagination for rules list
+  const rulesPagination = usePagination({
+    items: rules,
+    pageSize: 10,
+    searchFn: (rule, query) =>
+      rule.name.toLowerCase().includes(query) ||
+      rule.repository?.toLowerCase().includes(query) ||
+      rule.jobId?.toLowerCase().includes(query) ||
+      rule.type.toLowerCase().includes(query) ||
+      destinationNames(rule.destinationIds).toLowerCase().includes(query),
+  })
 
   async function addRule(e: React.FormEvent) {
     e.preventDefault()
@@ -800,30 +813,13 @@ export default function RulesTab({ rules, settings, onRulesChange, onError, onNo
           <div className="empty text-base">No alert rules yet.</div>
         ) : (
           <>
-            {/* Search bar */}
-            <div className="mb-4">
-              <input
-                type="text"
-                placeholder="Search rules by name, repository, or destination..."
-                value={rulesSearchQuery}
-                onChange={(e) => setRulesSearchQuery(e.target.value)}
-                className="w-full px-3 py-2 border border-[var(--border)] rounded bg-[var(--cream)] text-sm placeholder:text-[var(--text-light)] focus:outline-none focus:border-[var(--gold)]"
-              />
-            </div>
-            <div className="space-y-3">
-              {rules
-                .filter((rule) => {
-                  if (!rulesSearchQuery.trim()) return true
-                  const q = rulesSearchQuery.toLowerCase()
-                  return (
-                    rule.name.toLowerCase().includes(q) ||
-                    rule.repository?.toLowerCase().includes(q) ||
-                    rule.jobId?.toLowerCase().includes(q) ||
-                    rule.type.toLowerCase().includes(q) ||
-                    destinationNames(rule.destinationIds).toLowerCase().includes(q)
-                  )
-                })
-                .map((rule) => (
+            <ListControls
+              pagination={rulesPagination}
+              searchPlaceholder="Search rules by name, repository, or destination..."
+              pageSizeOptions={[10, 25, 50]}
+            />
+            <div className="space-y-3 mt-4">
+              {rulesPagination.paginatedItems.map((rule) => (
                   <div
                     key={rule.id}
                     className={`bg-paper border rounded px-4 py-3 ${
@@ -891,17 +887,7 @@ export default function RulesTab({ rules, settings, onRulesChange, onError, onNo
                     </div>
                   </div>
                 ))}
-              {rules.filter((rule) => {
-                if (!rulesSearchQuery.trim()) return true
-                const q = rulesSearchQuery.toLowerCase()
-                return (
-                  rule.name.toLowerCase().includes(q) ||
-                  rule.repository?.toLowerCase().includes(q) ||
-                  rule.jobId?.toLowerCase().includes(q) ||
-                  rule.type.toLowerCase().includes(q) ||
-                  destinationNames(rule.destinationIds).toLowerCase().includes(q)
-                )
-              }).length === 0 && rulesSearchQuery.trim() && (
+              {rulesPagination.paginatedItems.length === 0 && rulesPagination.search.trim() && (
                 <div className="text-sm text-[var(--text-light)] text-center py-6">
                   No rules match your search.
                 </div>

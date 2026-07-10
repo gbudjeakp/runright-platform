@@ -4,12 +4,10 @@
 package assistant
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -50,6 +48,7 @@ type Assistant struct {
 	cfg        Config
 	client     *http.Client
 	embeddings EmbeddingService
+	provider   Provider // Abstracted LLM provider
 }
 
 // New creates a new Assistant with the given config.
@@ -73,10 +72,24 @@ func New(db *sql.DB, cfg Config) *Assistant {
 	if cfg.Provider == ProviderOllama && cfg.BaseURL == "" {
 		cfg.BaseURL = "http://localhost:11434"
 	}
+
+	httpClient := &http.Client{Timeout: 180 * time.Second}
+
+	// Create the LLM provider
+	provider := NewProvider(cfg.Provider, ProviderConfig{
+		APIKey:      cfg.APIKey,
+		BaseURL:     cfg.BaseURL,
+		Model:       cfg.Model,
+		MaxTokens:   2048,
+		Temperature: 0.3,
+		HTTPClient:  httpClient,
+	})
+
 	return &Assistant{
-		db:     db,
-		cfg:    cfg,
-		client: &http.Client{Timeout: 180 * time.Second}, // Longer timeout for local models
+		db:       db,
+		cfg:      cfg,
+		client:   httpClient,
+		provider: provider,
 	}
 }
 
@@ -133,7 +146,7 @@ func (a *Assistant) GetProviderInfo() map[string]string {
 
 // systemPrompt returns the base system prompt for the assistant.
 func (a *Assistant) systemPrompt() string {
-	return `You are RunRight AI, an intelligent assistant for the RunRight CI/CD cost optimization platform.
+	base := `You are RunRight AI, an intelligent assistant for the RunRight CI/CD cost optimization platform.
 
 Your role is to help users understand and optimize their CI/CD resource usage and costs. You have access to:
 - Job execution metrics (CPU, memory, GPU, disk, network usage)
@@ -167,6 +180,8 @@ You can help users with questions like:
 - "Are there any policy violations?"
 
 Always be helpful, accurate, and focused on helping users reduce costs and improve efficiency.`
+
+	return base + a.ToolsSystemPromptAddition()
 }
 
 // Chat processes a chat message and returns a response.
@@ -208,7 +223,7 @@ func (a *Assistant) Chat(ctx context.Context, req types.ChatRequest, userID stri
 	}
 
 	// Build context from RunRight data (with optional RAG)
-	assistantCtx, dataSources, err := a.buildContext(ctx, req.Repository, req.JobID, req.Message)
+	assistantCtx, dataSources, err := a.buildContext(ctx, req.Repository, req.JobID, req.Message, req.PageContext)
 	if err != nil {
 		return nil, fmt.Errorf("build context: %w", err)
 	}
@@ -228,7 +243,7 @@ func (a *Assistant) Chat(ctx context.Context, req types.ChatRequest, userID stri
 	history := trimHistory(mem.RecentMessages, budgets.historyBudget)
 
 	// Call LLM with compacted memory summary injected alongside history.
-	response, err := a.callLLM(ctx, mem.Summary, history, assistantCtx, req.Message)
+	response, err := a.callLLM(ctx, mem.Summary, history, assistantCtx, req.Message, userID)
 	if err != nil {
 		return nil, fmt.Errorf("call LLM: %w", err)
 	}
@@ -264,9 +279,18 @@ func (a *Assistant) Chat(ctx context.Context, req types.ChatRequest, userID stri
 // buildContext aggregates RunRight data for the LLM.
 // If RAG is enabled and embeddings are configured, it uses semantic search
 // to find relevant jobs based on the user's question.
-func (a *Assistant) buildContext(ctx context.Context, repository, jobID, userMessage string) (*types.AssistantContext, []types.DataSource, error) {
+func (a *Assistant) buildContext(ctx context.Context, repository, jobID, userMessage string, pageCtx *types.PageContext) (*types.AssistantContext, []types.DataSource, error) {
 	var dataSources []types.DataSource
 	assistantCtx := &types.AssistantContext{}
+
+	// Include page context so the assistant knows what the user is looking at
+	if pageCtx != nil {
+		assistantCtx.PageContext = pageCtx
+		dataSources = append(dataSources, types.DataSource{
+			Type:        "page_context",
+			Description: fmt.Sprintf("User is viewing: %s", pageCtx.Page),
+		})
+	}
 
 	// Use RAG if enabled and configured
 	if a.cfg.UseRAG && a.embeddings != nil && a.embeddings.IsConfigured() {
@@ -333,6 +357,28 @@ func (a *Assistant) buildContext(ctx context.Context, repository, jobID, userMes
 			Description: "Cost policy rules",
 			Count:       len(policies),
 		})
+	}
+
+	// Fetch alerts if on alerts page or user mentions alerts
+	if pageCtx != nil && pageCtx.Page == "alerts" {
+		alerts, err := a.fetchAlerts(ctx)
+		if err == nil && len(alerts) > 0 {
+			assistantCtx.Alerts = alerts
+			dataSources = append(dataSources, types.DataSource{
+				Type:        "alerts",
+				Description: "Alert rules",
+				Count:       len(alerts),
+			})
+		}
+		destinations, err := a.fetchDestinations(ctx)
+		if err == nil && len(destinations) > 0 {
+			assistantCtx.Destinations = destinations
+			dataSources = append(dataSources, types.DataSource{
+				Type:        "destinations",
+				Description: "Alert destinations",
+				Count:       len(destinations),
+			})
+		}
 	}
 
 	// Fetch repositories
@@ -519,6 +565,55 @@ func (a *Assistant) fetchPolicies(ctx context.Context, repository string) ([]typ
 	return policies, rows.Err()
 }
 
+// fetchAlerts retrieves alert rules.
+func (a *Assistant) fetchAlerts(ctx context.Context) ([]types.AlertRule, error) {
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT id, name, COALESCE(repository, ''), COALESCE(job_id, ''), 
+		       condition_type, threshold_value, channel, destination, enabled
+		FROM alert_rules
+		ORDER BY created_at DESC
+		LIMIT 50
+	`)
+	if err != nil {
+		return nil, nil
+	}
+	defer rows.Close()
+
+	var alerts []types.AlertRule
+	for rows.Next() {
+		var a types.AlertRule
+		if err := rows.Scan(&a.ID, &a.Name, &a.Repository, &a.JobID,
+			&a.ConditionType, &a.Threshold, &a.Channel, &a.Destination, &a.Enabled); err != nil {
+			return nil, err
+		}
+		alerts = append(alerts, a)
+	}
+	return alerts, rows.Err()
+}
+
+// fetchDestinations retrieves alert destinations.
+func (a *Assistant) fetchDestinations(ctx context.Context) ([]types.AlertDestination, error) {
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT id, name, type, COALESCE(config, ''), verified
+		FROM alert_destinations
+		ORDER BY name
+	`)
+	if err != nil {
+		return nil, nil
+	}
+	defer rows.Close()
+
+	var destinations []types.AlertDestination
+	for rows.Next() {
+		var d types.AlertDestination
+		if err := rows.Scan(&d.ID, &d.Name, &d.Type, &d.Config, &d.Verified); err != nil {
+			return nil, err
+		}
+		destinations = append(destinations, d)
+	}
+	return destinations, rows.Err()
+}
+
 // fetchRepositories gets all known repositories.
 func (a *Assistant) fetchRepositories(ctx context.Context) ([]string, error) {
 	rows, err := a.db.QueryContext(ctx, `
@@ -544,26 +639,75 @@ func (a *Assistant) fetchRepositories(ctx context.Context) ([]string, error) {
 	return repos, rows.Err()
 }
 
-// callLLM sends the request to the configured LLM provider.
+// callLLM sends the request to the configured LLM provider using the provider interface.
 // memorySummary is the compacted digest of older conversation turns; it is injected
 // as an additional system message so the model retains long-term context efficiently.
-func (a *Assistant) callLLM(ctx context.Context, memorySummary string, history []types.ChatMessage, assistantCtx *types.AssistantContext, userMessage string) (string, error) {
-	switch a.cfg.Provider {
-	case ProviderAnthropic:
-		return a.callAnthropic(ctx, memorySummary, history, assistantCtx, userMessage)
-	case ProviderOllama:
-		return a.callOllama(ctx, memorySummary, history, assistantCtx, userMessage)
-	case ProviderOpenAI:
-		fallthrough
-	default:
-		return a.callOpenAI(ctx, memorySummary, history, assistantCtx, userMessage)
+func (a *Assistant) callLLM(ctx context.Context, memorySummary string, history []types.ChatMessage, assistantCtx *types.AssistantContext, userMessage string, userID string) (string, error) {
+	// Detect if this is an action request that should force tool use
+	forceToolUse := isActionRequest(userMessage)
+
+	// Build the unified chat request
+	req := ChatCompletionRequest{
+		SystemPrompt:    a.systemPrompt(),
+		MemorySummary:   memorySummary,
+		SemanticContext: assistantCtx.SemanticContext,
+		DataContext:     formatContextAsText(assistantCtx),
+		History:         history,
+		UserMessage:     userMessage,
+		Tools:           a.AvailableTools(),
+		MaxIterations:   5,
+		ForceToolUse:    forceToolUse,
 	}
+
+	// Use the provider to execute the chat with tool support
+	return a.provider.Chat(ctx, req, func(ctx context.Context, call ToolCall) (*ToolResult, error) {
+		return a.ExecuteTool(ctx, call, userID, "")
+	})
+}
+
+// isActionRequest detects if the user message is asking for an action (create, delete, etc.)
+// These requests should force tool use on the first turn.
+func isActionRequest(msg string) bool {
+	lower := strings.ToLower(msg)
+	actionWords := []string{
+		"create", "make", "add", "set up", "setup", "configure",
+		"delete", "remove", "revoke",
+		"update", "change", "modify", "edit",
+		"list", "show", "get", "view", "display",
+		"enable", "disable", "toggle",
+		"snooze", "archive", "unarchive",
+		"assign", "unassign",
+	}
+	for _, word := range actionWords {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	return false
 }
 
 // formatContextAsText converts AssistantContext into human-readable structured text
 // that LLMs can reason about far more effectively than raw JSON.
 func formatContextAsText(ctx *types.AssistantContext) string {
 	var b strings.Builder
+
+	// --- Page Context (what the user is looking at) ---
+	if ctx.PageContext != nil {
+		b.WriteString("=== CURRENT PAGE CONTEXT ===\n")
+		b.WriteString(fmt.Sprintf("  User is viewing: %s\n", ctx.PageContext.Page))
+		if ctx.PageContext.EntityType != "" && ctx.PageContext.EntityID != "" {
+			b.WriteString(fmt.Sprintf("  Viewing specific %s: %s\n", ctx.PageContext.EntityType, ctx.PageContext.EntityID))
+		}
+		if len(ctx.PageContext.Metadata) > 0 {
+			b.WriteString("  Page data:\n")
+			for k, v := range ctx.PageContext.Metadata {
+				b.WriteString(fmt.Sprintf("    %s: %v\n", k, v))
+			}
+		}
+		b.WriteString("\n")
+		b.WriteString("NOTE: Analyze this page's content when answering. If the user asks about ")
+		b.WriteString("\"this\", \"these\", or \"what I'm looking at\", refer to the above context.\n\n")
+	}
 
 	// --- Repositories ---
 	if len(ctx.Repositories) > 0 {
@@ -657,6 +801,39 @@ func formatContextAsText(ctx *types.AssistantContext) string {
 		b.WriteString("\n")
 	}
 
+	// --- Alerts ---
+	if len(ctx.Alerts) > 0 {
+		b.WriteString("=== ALERT RULES ===\n")
+		for _, a := range ctx.Alerts {
+			scope := "global"
+			if a.Repository != "" && a.JobID != "" {
+				scope = fmt.Sprintf("%s / %s", a.Repository, a.JobID)
+			} else if a.Repository != "" {
+				scope = a.Repository
+			}
+			status := "enabled"
+			if !a.Enabled {
+				status = "disabled"
+			}
+			b.WriteString(fmt.Sprintf("  • %s (%s): %s > %.0f → %s [%s]\n",
+				a.Name, scope, a.ConditionType, a.Threshold, a.Destination, status))
+		}
+		b.WriteString("\n")
+	}
+
+	// --- Destinations ---
+	if len(ctx.Destinations) > 0 {
+		b.WriteString("=== ALERT DESTINATIONS ===\n")
+		for _, d := range ctx.Destinations {
+			verified := ""
+			if d.Verified {
+				verified = " ✓"
+			}
+			b.WriteString(fmt.Sprintf("  • %s (%s)%s\n", d.Name, d.Type, verified))
+		}
+		b.WriteString("\n")
+	}
+
 	return b.String()
 }
 
@@ -666,316 +843,6 @@ func pct(value, total float64) float64 {
 		return 0
 	}
 	return value / total * 100
-}
-
-// callOllama calls a local or remote Ollama instance.
-func (a *Assistant) callOllama(ctx context.Context, memorySummary string, history []types.ChatMessage, assistantCtx *types.AssistantContext, userMessage string) (string, error) {
-	type message struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	}
-	type request struct {
-		Model    string    `json:"model"`
-		Messages []message `json:"messages"`
-		Stream   bool      `json:"stream"`
-		Options  struct {
-			Temperature float64 `json:"temperature,omitempty"`
-			NumPredict  int     `json:"num_predict,omitempty"`
-		} `json:"options,omitempty"`
-	}
-	type response struct {
-		Message message `json:"message"`
-		Done    bool    `json:"done"`
-		Error   string  `json:"error,omitempty"`
-	}
-
-	messages := []message{{Role: "system", Content: a.systemPrompt()}}
-
-	// Compacted memory keeps the model aware of the full conversation history
-	// without paying the token cost of verbatim old messages.
-	if memorySummary != "" {
-		messages = append(messages, message{
-			Role:    "system",
-			Content: "CONVERSATION MEMORY (summary of earlier turns):\n" + memorySummary,
-		})
-	}
-
-	// Semantic search results from RAG (already budget-trimmed upstream).
-	if assistantCtx.SemanticContext != "" {
-		messages = append(messages, message{
-			Role:    "system",
-			Content: "RELEVANT CONTEXT (semantic search):\n" + assistantCtx.SemanticContext,
-		})
-	}
-
-	// RunRight metrics — formatted as readable text so the model can reason about numbers.
-	messages = append(messages, message{
-		Role:    "system",
-		Content: "Current RunRight data:\n" + formatContextAsText(assistantCtx),
-	})
-
-	// Verbatim recent history — already token-budget-trimmed upstream.
-	for _, h := range history {
-		if h.Role == "user" || h.Role == "assistant" {
-			messages = append(messages, message{Role: h.Role, Content: h.Content})
-		}
-	}
-
-	messages = append(messages, message{Role: "user", Content: userMessage})
-
-	reqBody := request{
-		Model:    a.cfg.Model,
-		Messages: messages,
-		Stream:   false,
-	}
-	reqBody.Options.Temperature = 0.3
-	reqBody.Options.NumPredict = 2048
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
-	}
-
-	endpoint := strings.TrimSuffix(a.cfg.BaseURL, "/") + "/api/chat"
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("ollama request failed: %w (is Ollama running at %s?)", err, a.cfg.BaseURL)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("ollama error (status %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var result response
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("parse ollama response: %w", err)
-	}
-
-	if result.Error != "" {
-		return "", fmt.Errorf("ollama error: %s", result.Error)
-	}
-
-	return result.Message.Content, nil
-}
-
-// callOpenAI calls the OpenAI Chat API.
-func (a *Assistant) callOpenAI(ctx context.Context, memorySummary string, history []types.ChatMessage, assistantCtx *types.AssistantContext, userMessage string) (string, error) {
-	type message struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	}
-	type request struct {
-		Model       string    `json:"model"`
-		Messages    []message `json:"messages"`
-		MaxTokens   int       `json:"max_tokens,omitempty"`
-		Temperature float64   `json:"temperature,omitempty"`
-	}
-	type choice struct {
-		Message message `json:"message"`
-	}
-	type response struct {
-		Choices []choice `json:"choices"`
-		Error   *struct {
-			Message string `json:"message"`
-		} `json:"error,omitempty"`
-	}
-
-	messages := []message{{Role: "system", Content: a.systemPrompt()}}
-
-	// Compacted memory of older turns.
-	if memorySummary != "" {
-		messages = append(messages, message{
-			Role:    "system",
-			Content: "CONVERSATION MEMORY (summary of earlier turns):\n" + memorySummary,
-		})
-	}
-
-	// RAG semantic results.
-	if assistantCtx.SemanticContext != "" {
-		messages = append(messages, message{
-			Role:    "system",
-			Content: "RELEVANT CONTEXT (semantic search):\n" + assistantCtx.SemanticContext,
-		})
-	}
-
-	// RunRight metrics — formatted as readable text so the model can reason about numbers.
-	messages = append(messages, message{
-		Role:    "system",
-		Content: "Current RunRight data:\n" + formatContextAsText(assistantCtx),
-	})
-
-	// Verbatim recent history — budget-trimmed upstream.
-	for _, h := range history {
-		if h.Role == "user" || h.Role == "assistant" {
-			messages = append(messages, message{Role: h.Role, Content: h.Content})
-		}
-	}
-
-	messages = append(messages, message{Role: "user", Content: userMessage})
-
-	reqBody := request{
-		Model:       a.cfg.Model,
-		Messages:    messages,
-		MaxTokens:   2048,
-		Temperature: 0.3,
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+a.cfg.APIKey)
-
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var result response
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
-	}
-
-	if result.Error != nil {
-		return "", fmt.Errorf("OpenAI API error: %s", result.Error.Message)
-	}
-
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no response from OpenAI")
-	}
-
-	return result.Choices[0].Message.Content, nil
-}
-
-// callAnthropic calls the Anthropic Messages API.
-func (a *Assistant) callAnthropic(ctx context.Context, memorySummary string, history []types.ChatMessage, assistantCtx *types.AssistantContext, userMessage string) (string, error) {
-	type content struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	type message struct {
-		Role    string    `json:"role"`
-		Content []content `json:"content"`
-	}
-	type request struct {
-		Model     string    `json:"model"`
-		System    string    `json:"system"`
-		Messages  []message `json:"messages"`
-		MaxTokens int       `json:"max_tokens"`
-	}
-	type response struct {
-		Content []content `json:"content"`
-		Error   *struct {
-			Message string `json:"message"`
-		} `json:"error,omitempty"`
-	}
-
-	// Build system prompt: base + memory summary + semantic context + data.
-	var systemParts []string
-	systemParts = append(systemParts, a.systemPrompt())
-	if memorySummary != "" {
-		systemParts = append(systemParts, "CONVERSATION MEMORY (summary of earlier turns):\n"+memorySummary)
-	}
-	if assistantCtx.SemanticContext != "" {
-		systemParts = append(systemParts, "RELEVANT CONTEXT (semantic search):\n"+assistantCtx.SemanticContext)
-	}
-	// RunRight metrics — formatted as readable text so the model can reason about numbers.
-	systemParts = append(systemParts, "Current RunRight data:\n"+formatContextAsText(assistantCtx))
-	systemPrompt := strings.Join(systemParts, "\n\n")
-
-	// Build messages — verbatim recent history (budget-trimmed upstream).
-	var messages []message
-	for _, h := range history {
-		if h.Role == "user" || h.Role == "assistant" {
-			messages = append(messages, message{
-				Role:    h.Role,
-				Content: []content{{Type: "text", Text: h.Content}},
-			})
-		}
-	}
-	messages = append(messages, message{
-		Role:    "user",
-		Content: []content{{Type: "text", Text: userMessage}},
-	})
-
-	reqBody := request{
-		Model:     a.cfg.Model,
-		System:    systemPrompt,
-		Messages:  messages,
-		MaxTokens: 2048,
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", a.cfg.APIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var result response
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
-	}
-
-	if result.Error != nil {
-		return "", fmt.Errorf("Anthropic API error: %s", result.Error.Message)
-	}
-
-	if len(result.Content) == 0 {
-		return "", fmt.Errorf("no response from Anthropic")
-	}
-
-	// Concatenate all text content
-	var sb strings.Builder
-	for _, c := range result.Content {
-		if c.Type == "text" {
-			sb.WriteString(c.Text)
-		}
-	}
-
-	return sb.String(), nil
 }
 
 // Database operations

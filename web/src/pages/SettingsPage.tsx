@@ -3,6 +3,8 @@ import { fetchUserSettings, upsertUserSettings, fetchSSOConfigs, upsertSSOConfig
 import { CURRENCY_OPTIONS, type CurrencyCode, useCurrencyPreference } from '../currency'
 import type { SSOConfig, SSOProviderType, SSOUser, Role } from '../types'
 import { useUser } from '../App'
+import { usePagination } from '../hooks/usePagination'
+import { ListControls } from '../components/ListControls'
 
 // Types
 interface APIKey {
@@ -186,7 +188,7 @@ function GeneralTab() {
           
           <div className="flex items-center gap-4">
             <button type="submit" className="settings-btn-primary">Save Changes</button>
-            {saved && <span className="text-sm text-green-600">Saved!</span>}
+            {saved && <span className="text-sm text-green-600 dark:text-green-400">Saved!</span>}
           </div>
         </form>
       </Card>
@@ -379,7 +381,7 @@ function SSOTab() {
               {configs.map(config => (
                 <div key={config.id} className="py-4 flex items-center justify-between">
                   <div className="flex items-center gap-4">
-                    <div className={`w-2 h-2 rounded-full ${config.enabled ? 'bg-green-500' : 'bg-gray-300'}`} />
+                    <div className={`w-2 h-2 rounded-full ${config.enabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'}`} />
                     <div>
                       <div className="font-medium text-[var(--text)]">{config.name}</div>
                       <div className="text-sm text-[var(--text-light)]">
@@ -461,10 +463,10 @@ function APIKeysTab() {
   return (
     <div className="space-y-6">
       {createdKey && (
-        <Card title="New API Key Created" className="bg-green-50 border-green-200">
+        <Card title="New API Key Created" className="bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800">
           <div className="space-y-3">
-            <p className="text-sm text-green-800">Copy this key now. It won't be shown again.</p>
-            <div className="bg-white border border-green-300 rounded px-4 py-3 font-mono text-sm break-all">
+            <p className="text-sm text-green-800 dark:text-green-300">Copy this key now. It won't be shown again.</p>
+            <div className="bg-[var(--paper)] border border-green-300 dark:border-green-700 rounded px-4 py-3 font-mono text-sm break-all text-[var(--text)]">
               {createdKey}
             </div>
             <button onClick={() => setCreatedKey(null)} className="settings-btn-secondary">Done</button>
@@ -765,6 +767,17 @@ function UsersTab() {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState<string | null>(null)
 
+  // Pagination for users
+  const usersPagination = usePagination({
+    items: users,
+    pageSize: 10,
+    searchFn: (u, query) =>
+      (u.name?.toLowerCase().includes(query) ?? false) ||
+      u.email.toLowerCase().includes(query) ||
+      u.role.toLowerCase().includes(query) ||
+      u.provider.toLowerCase().includes(query),
+  })
+
   useEffect(() => { void load() }, [])
 
   async function load() {
@@ -811,33 +824,41 @@ function UsersTab() {
         {users.length === 0 ? (
           <EmptyState icon={<UsersIcon />} message="No SSO users yet. Users will appear here after logging in via SSO." />
         ) : (
-          <div className="divide-y divide-[var(--border)]">
-            {users.map((u) => (
-              <div key={u.email} className="py-3 flex items-center gap-4 flex-wrap sm:flex-nowrap">
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-[var(--text)] truncate">{u.name || u.email}</div>
-                  <div className="text-xs text-[var(--text-light)] truncate">
-                    {u.email} · {u.provider}
-                    {u.last_login_at && ` · Last login ${new Date(u.last_login_at).toLocaleDateString()}`}
+          <>
+            <ListControls
+              pagination={usersPagination}
+              searchPlaceholder="Search users by name, email, or role..."
+              pageSizeOptions={[10, 25, 50]}
+              className="mb-4"
+            />
+            <div className="divide-y divide-[var(--border)]">
+              {usersPagination.paginatedItems.map((u) => (
+                <div key={u.email} className="py-3 flex items-center gap-4 flex-wrap sm:flex-nowrap">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-[var(--text)] truncate">{u.name || u.email}</div>
+                    <div className="text-xs text-[var(--text-light)] truncate">
+                      {u.email} · {u.provider}
+                      {u.last_login_at && ` · Last login ${new Date(u.last_login_at).toLocaleDateString()}`}
+                    </div>
+                  </div>
+                  <div className="flex-shrink-0 flex items-center gap-2">
+                    <select
+                      className="settings-select text-sm"
+                      value={u.role}
+                      disabled={!can('team:manage') || saving === u.email}
+                      onChange={(e) => void changeRole(u.email, e.target.value)}
+                      title={roleDesc(u.role)}
+                    >
+                      {roles.map((r) => (
+                        <option key={r.name} value={r.name}>{r.name.charAt(0).toUpperCase() + r.name.slice(1)}</option>
+                      ))}
+                    </select>
+                    {saving === u.email && <span className="text-xs text-[var(--text-light)]">Saving…</span>}
                   </div>
                 </div>
-                <div className="flex-shrink-0 flex items-center gap-2">
-                  <select
-                    className="settings-select text-sm"
-                    value={u.role}
-                    disabled={!can('team:manage') || saving === u.email}
-                    onChange={(e) => void changeRole(u.email, e.target.value)}
-                    title={roleDesc(u.role)}
-                  >
-                    {roles.map((r) => (
-                      <option key={r.name} value={r.name}>{r.name.charAt(0).toUpperCase() + r.name.slice(1)}</option>
-                    ))}
-                  </select>
-                  {saving === u.email && <span className="text-xs text-[var(--text-light)]">Saving…</span>}
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </>
         )}
       </Card>
 
@@ -935,6 +956,15 @@ function RolesTab() {
   const [newRole, setNewRole] = useState({ name: '', description: '', permissions: [] as string[] })
   const [newError, setNewError] = useState('')
 
+  // Pagination for roles
+  const rolesPagination = usePagination({
+    items: roles,
+    pageSize: 10,
+    searchFn: (r, query) =>
+      r.name.toLowerCase().includes(query) ||
+      r.description.toLowerCase().includes(query),
+  })
+
   useEffect(() => { void load() }, [])
 
   async function load() {
@@ -1015,8 +1045,15 @@ function RolesTab() {
           Custom roles can be fully managed and assigned to users on the Users &amp; Roles tab.
         </p>
 
+        <ListControls
+          pagination={rolesPagination}
+          searchPlaceholder="Search roles..."
+          pageSizeOptions={[10, 25, 50]}
+          className="mb-4"
+        />
+
         <div className="divide-y divide-[var(--border)]">
-          {roles.map((role) => {
+          {rolesPagination.paginatedItems.map((role) => {
             const isExpanded = expandedId === role.id
             const draft = editing[role.id]
             const isDirty = !!draft
@@ -1217,7 +1254,7 @@ function AuditTab() {
 
 function Card({ title, action, children, className = '' }: { title: string; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
-    <div className={`bg-white border border-[var(--border)] rounded-lg shadow-sm ${className}`}>
+    <div className={`bg-[var(--paper)] border border-[var(--border)] rounded-lg shadow-sm ${className}`}>
       <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
         <h2 className="font-semibold text-[var(--text)]">{title}</h2>
         {action}
@@ -1242,7 +1279,7 @@ function LoadingState() {
 }
 
 function ErrorMessage({ message }: { message: string }) {
-  return <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-4 py-3">{message}</div>
+  return <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-4 py-3">{message}</div>
 }
 
 function EmptyState({ icon, message, action }: { icon: React.ReactNode; message: string; action?: React.ReactNode }) {

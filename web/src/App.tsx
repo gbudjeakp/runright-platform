@@ -9,10 +9,13 @@ import AnalyticsPage from './pages/AnalyticsPage'
 import PoliciesPage from './pages/PoliciesPage'
 import AlertsPage from './pages/AlertsPage'
 import AssistantPage from './pages/AssistantPage'
+import AutoPRPage from './pages/AutoPRPage'
 import LoginPage from './pages/LoginPage'
 import ReposPage from './pages/ReposPage'
 import RepoDetailPage from './pages/RepoDetailPage'
 import RunHistoryPage from './pages/RunHistoryPage'
+import ChatWidget from './components/ChatWidget'
+import { PageDataProvider } from './contexts/PageDataContext'
 import { logout, fetchCurrentUser } from './api'
 import type { CurrentUser } from './types'
 import LogoMark from './components/LogoMark'
@@ -106,6 +109,7 @@ function AppRoutes() {
           <Route path="repos" element={<ReposPage />} />
           <Route path="repos/detail" element={<RepoDetailPage />} />
           <Route path="assistant" element={<AssistantPage />} />
+          <Route path="auto-pr" element={<AutoPRPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
@@ -237,6 +241,19 @@ const AssistantIcon = ({ className }: NavIconProps) => (
   </svg>
 )
 
+const AutoPRIcon = ({ className }: NavIconProps) => (
+  <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {/* Git PR merge icon */}
+    <circle cx="6" cy="6" r="3"/>
+    <circle cx="6" cy="18" r="3"/>
+    <path d="M6 9v6"/>
+    <circle cx="18" cy="18" r="3"/>
+    <path d="M18 9a9 9 0 0 0-9 9"/>
+    <path d="M18 3v6"/>
+    <path d="M15 6h6"/>
+  </svg>
+)
+
 // Sidebar nav link helper
 function SideLink({
   to,
@@ -337,6 +354,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
   const closeMobile = () => setMobileOpen(false)
 
   return (
+    <PageDataProvider>
     <div className="min-h-screen overflow-x-hidden bg-[var(--cream)] text-[var(--text)] md:flex md:h-[100dvh] md:overflow-hidden">
 
       {/* ── Sidebar ── */}
@@ -393,6 +411,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
         <SideLink to="/app/analytics" onClick={closeMobile} collapsed={desktopCollapsed} icon={AnalyticsIcon}>Analytics</SideLink>
         <SideLink to="/app/history" onClick={closeMobile} collapsed={desktopCollapsed} icon={HistoryIcon}>Activity</SideLink>
         <SideLink to="/app/assistant" onClick={closeMobile} collapsed={desktopCollapsed} icon={AssistantIcon}>AI Assistant</SideLink>
+        <SideLink to="/app/auto-pr" onClick={closeMobile} collapsed={desktopCollapsed} icon={AutoPRIcon}>Auto PR</SideLink>
         <SideLink to="/app/settings" onClick={closeMobile} collapsed={desktopCollapsed} icon={SettingsIcon}>Settings</SideLink>
 
         <div className="mt-auto flex flex-col pt-4 border-t border-[var(--sidebar-border)]">
@@ -423,6 +442,10 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
 
         <Outlet />
       </main>
+
+      {/* Floating AI Chat Widget */}
+      <ChatWidget />
     </div>
+    </PageDataProvider>
   )
 }

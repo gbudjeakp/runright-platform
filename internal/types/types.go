@@ -249,6 +249,14 @@ type ChatMessage struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
+// PageContext describes what page/view the user is currently on.
+type PageContext struct {
+	Page       string                 `json:"page"`                  // e.g., "jobs", "job_detail", "alerts", "policies", "repos"
+	EntityID   string                 `json:"entity_id,omitempty"`   // e.g., job_id, alert_id, repo name
+	EntityType string                 `json:"entity_type,omitempty"` // e.g., "job", "alert", "policy", "repository"
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`    // additional page-specific context
+}
+
 // ChatRequest is the payload for sending a message to the assistant.
 type ChatRequest struct {
 	ConversationID string `json:"conversation_id,omitempty"` // empty = new conversation
@@ -256,6 +264,8 @@ type ChatRequest struct {
 	// Context filters to scope the assistant's data access
 	Repository string `json:"repository,omitempty"`
 	JobID      string `json:"job_id,omitempty"`
+	// Page-aware context - tells assistant what user is looking at
+	PageContext *PageContext `json:"page_context,omitempty"`
 }
 
 // ChatResponse is the assistant's reply.
@@ -280,6 +290,33 @@ type AssistantContext struct {
 	Policies        []PolicyRule                 `json:"policies,omitempty"`
 	Repositories    []string                     `json:"repositories,omitempty"`
 	SemanticContext string                       `json:"semantic_context,omitempty"` // RAG: relevant job text from semantic search
+	// Page-aware context
+	PageContext     *PageContext                 `json:"page_context,omitempty"`
+	// Additional data for specific pages
+	Alerts          []AlertRule                  `json:"alerts,omitempty"`
+	Destinations    []AlertDestination           `json:"destinations,omitempty"`
+}
+
+// AlertRule represents an alert configuration.
+type AlertRule struct {
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	Repository    string  `json:"repository,omitempty"`
+	JobID         string  `json:"job_id,omitempty"`
+	ConditionType string  `json:"condition_type"`
+	Threshold     float64 `json:"threshold_value"`
+	Channel       string  `json:"channel"`
+	Destination   string  `json:"destination"`
+	Enabled       bool    `json:"enabled"`
+}
+
+// AlertDestination represents a notification destination.
+type AlertDestination struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Type     string `json:"type"` // slack, email, webhook, pagerduty
+	Config   string `json:"config,omitempty"`
+	Verified bool   `json:"verified"`
 }
 
 // SavingsSnapshot captures current savings state for the assistant.
