@@ -86,7 +86,7 @@ func (a *Assistant) AvailableTools() []Tool {
 						"description": "Channel-specific destination (Slack channel, email address, or webhook URL)",
 					},
 				},
-				"required": []string{"name", "condition_type", "threshold", "channel", "destination"},
+				"required": []string{"name", "condition_type", "threshold"},
 			},
 		},
 		{
@@ -283,6 +283,14 @@ func (a *Assistant) executeCreateAlertRule(ctx context.Context, args json.RawMes
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	// Apply sensible defaults
+	if params.Channel == "" {
+		params.Channel = "slack"
+	}
+	if params.Destination == "" {
+		params.Destination = "#ci-costs"
 	}
 
 	id := uuid.New().String()
@@ -587,22 +595,42 @@ func (a *Assistant) executeGenerateSavingsReport(ctx context.Context, args json.
 func (a *Assistant) ToolsSystemPromptAddition() string {
 	return `
 
-## Agentic Capabilities
+## Agentic Capabilities — IMPORTANT
 
-You can take actions on behalf of the user. When the user asks you to do something (not just answer a question), use the appropriate tool. Always confirm what action you're taking.
+You have tools to take REAL actions. When a user asks you to CREATE, SET UP, MAKE, or CONFIGURE something, you MUST use the appropriate tool. Do NOT just describe what you would do — actually do it.
 
-Available actions:
-- **Create alerts**: Set up notifications for cost thresholds, waste levels, or performance issues
-- **Create policies**: Set spending guardrails at global, repository, or job level  
-- **Snooze/archive jobs**: Temporarily hide or permanently archive jobs from recommendations
-- **Generate reports**: Create savings reports and identify high-waste jobs
+**CRITICAL RULES:**
+1. When user says "create/make/set up an alert" → CALL create_alert_rule tool IMMEDIATELY
+2. When user says "create/set a policy" → CALL create_policy tool IMMEDIATELY
+3. When user says "snooze this job" → CALL snooze_job tool IMMEDIATELY
+4. Do NOT ask for confirmation unless critical info is truly missing
+5. Use sensible defaults for optional parameters:
+   - If no destination specified, use "#ci-costs" as the Slack channel
+   - If no channel specified, default to "slack"
+   - If no time range specified, use 30 days
 
-Before taking an action, briefly explain what you're about to do. After completing an action, confirm the result.
+**Available tools you MUST use:**
+- create_alert_rule: Create alerts for cost, waste, CPU, memory, or duration thresholds
+- create_policy: Set cost guardrails
+- snooze_job: Temporarily hide a job
+- archive_job: Permanently archive a job
+- get_job_details: Fetch detailed job metrics
+- list_high_waste_jobs: Find wasteful jobs
+- generate_savings_report: Create savings summary
 
-Example interaction:
-User: "Set up an alert when job build-test costs more than $0.50/hr"
-You: "I'll create a cost threshold alert for the build-test job. [calls create_alert_rule tool]"
-Result: "✅ Created alert rule..."
-You: "Done! I've set up an alert that will notify you when build-test exceeds $0.50/hr."
+**Example — DO THIS:**
+User: "make an alert for ml repo when wasting 90%"
+→ IMMEDIATELY call create_alert_rule with:
+  - name: "ML High Waste Alert" (or user's name if provided)
+  - repository: "runrightio/ml-platform" (infer from "ml repo")
+  - condition_type: "waste_threshold"
+  - threshold: 90
+  - channel: "slack"
+  - destination: "#ci-costs" (default)
+
+**DO NOT do this:**
+User: "make an alert for ml repo when wasting 90%"
+❌ "I can create an alert for you. Would you like me to..." — NO! Just create it.
+❌ "Here's what the alert would look like..." — NO! Actually create it.
 `
 }
