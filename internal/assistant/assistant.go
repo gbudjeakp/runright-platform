@@ -133,7 +133,7 @@ func (a *Assistant) GetProviderInfo() map[string]string {
 
 // systemPrompt returns the base system prompt for the assistant.
 func (a *Assistant) systemPrompt() string {
-	return `You are RunRight AI, an intelligent assistant for the RunRight CI/CD cost optimization platform.
+	base := `You are RunRight AI, an intelligent assistant for the RunRight CI/CD cost optimization platform.
 
 Your role is to help users understand and optimize their CI/CD resource usage and costs. You have access to:
 - Job execution metrics (CPU, memory, GPU, disk, network usage)
@@ -167,6 +167,8 @@ You can help users with questions like:
 - "Are there any policy violations?"
 
 Always be helpful, accurate, and focused on helping users reduce costs and improve efficiency.`
+
+	return base + a.ToolsSystemPromptAddition()
 }
 
 // Chat processes a chat message and returns a response.

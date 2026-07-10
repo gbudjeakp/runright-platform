@@ -34,6 +34,7 @@ type Server struct {
 	ssoMgr          *ssoManager
 	assistant       *assistant.Assistant
 	embeddings      *embeddings.Service
+	wsHub           *WSHub
 	// SMTP config for email notifications
 	smtpHost string
 	smtpUser string
@@ -89,7 +90,11 @@ func New(cfg Config) (*Server, error) {
 		smtpUser:        cfg.SMTPUser,
 		smtpPass:        cfg.SMTPPass,
 		smtpFrom:        cfg.SMTPFrom,
+		wsHub:           NewWSHub(),
 	}
+
+	// Start WebSocket hub
+	go s.wsHub.Run()
 
 	// Initialize SSO manager if enabled
 	if cfg.SSOEnabled && cfg.BaseURL != "" {
@@ -209,6 +214,25 @@ func New(cfg Config) (*Server, error) {
 		v1.PUT("/reports/:reportId", s.requirePermission(PermReportsManage), s.updateScheduledReport)
 		v1.DELETE("/reports/:reportId", s.requirePermission(PermReportsManage), s.deleteScheduledReport)
 		v1.POST("/reports/:reportId/run", s.requirePermission(PermReportsManage), s.runReportNow)
+
+		// Label Mappings & Auto-PR
+		v1.GET("/labels", s.listLabelMappings)
+		v1.PUT("/labels", s.requirePermission(PermPoliciesManage), s.upsertLabelMapping)
+		v1.DELETE("/labels/:id", s.requirePermission(PermPoliciesManage), s.deleteLabelMapping)
+
+		v1.GET("/auto-pr/settings", s.getAutoPRSettings)
+		v1.PUT("/auto-pr/settings", s.requirePermission(PermPoliciesManage), s.upsertAutoPRSettings)
+
+		v1.GET("/auto-pr/recommendations", s.listPRRecommendations)
+		v1.POST("/auto-pr/recommendations", s.createPRRecommendation)
+		v1.POST("/auto-pr/recommendations/:id/approve", s.requirePermission(PermPoliciesManage), s.approvePRRecommendation)
+		v1.POST("/auto-pr/recommendations/:id/dismiss", s.requirePermission(PermPoliciesManage), s.dismissPRRecommendation)
+
+		v1.GET("/auto-pr/history", s.listPRHistory)
+
+		// GPU Analysis
+		v1.GET("/gpu/tiers", s.listGPUTiers)
+		v1.POST("/gpu/recommendation", s.getGPURecommendation)
 	}
 
 	// Register AI Assistant routes
@@ -216,6 +240,9 @@ func New(cfg Config) (*Server, error) {
 
 	// Register Embedding routes for RAG
 	s.registerEmbeddingRoutes(v1)
+
+	// WebSocket for realtime updates (no auth for now, token in query param)
+	r.GET("/api/v1/ws", s.HandleWebSocket)
 
 	// Badge endpoint — intentionally unauthenticated for embedding in READMEs.
 	r.GET("/badge/:jobId", s.getBadge)

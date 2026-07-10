@@ -3,6 +3,8 @@ import { fetchUserSettings, upsertUserSettings, fetchSSOConfigs, upsertSSOConfig
 import { CURRENCY_OPTIONS, type CurrencyCode, useCurrencyPreference } from '../currency'
 import type { SSOConfig, SSOProviderType, SSOUser, Role } from '../types'
 import { useUser } from '../App'
+import { usePagination } from '../hooks/usePagination'
+import { ListControls } from '../components/ListControls'
 
 // Types
 interface APIKey {
@@ -765,6 +767,17 @@ function UsersTab() {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState<string | null>(null)
 
+  // Pagination for users
+  const usersPagination = usePagination({
+    items: users,
+    pageSize: 10,
+    searchFn: (u, query) =>
+      (u.name?.toLowerCase().includes(query) ?? false) ||
+      u.email.toLowerCase().includes(query) ||
+      u.role.toLowerCase().includes(query) ||
+      u.provider.toLowerCase().includes(query),
+  })
+
   useEffect(() => { void load() }, [])
 
   async function load() {
@@ -811,33 +824,41 @@ function UsersTab() {
         {users.length === 0 ? (
           <EmptyState icon={<UsersIcon />} message="No SSO users yet. Users will appear here after logging in via SSO." />
         ) : (
-          <div className="divide-y divide-[var(--border)]">
-            {users.map((u) => (
-              <div key={u.email} className="py-3 flex items-center gap-4 flex-wrap sm:flex-nowrap">
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-[var(--text)] truncate">{u.name || u.email}</div>
-                  <div className="text-xs text-[var(--text-light)] truncate">
-                    {u.email} · {u.provider}
-                    {u.last_login_at && ` · Last login ${new Date(u.last_login_at).toLocaleDateString()}`}
+          <>
+            <ListControls
+              pagination={usersPagination}
+              searchPlaceholder="Search users by name, email, or role..."
+              pageSizeOptions={[10, 25, 50]}
+              className="mb-4"
+            />
+            <div className="divide-y divide-[var(--border)]">
+              {usersPagination.paginatedItems.map((u) => (
+                <div key={u.email} className="py-3 flex items-center gap-4 flex-wrap sm:flex-nowrap">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-[var(--text)] truncate">{u.name || u.email}</div>
+                    <div className="text-xs text-[var(--text-light)] truncate">
+                      {u.email} · {u.provider}
+                      {u.last_login_at && ` · Last login ${new Date(u.last_login_at).toLocaleDateString()}`}
+                    </div>
+                  </div>
+                  <div className="flex-shrink-0 flex items-center gap-2">
+                    <select
+                      className="settings-select text-sm"
+                      value={u.role}
+                      disabled={!can('team:manage') || saving === u.email}
+                      onChange={(e) => void changeRole(u.email, e.target.value)}
+                      title={roleDesc(u.role)}
+                    >
+                      {roles.map((r) => (
+                        <option key={r.name} value={r.name}>{r.name.charAt(0).toUpperCase() + r.name.slice(1)}</option>
+                      ))}
+                    </select>
+                    {saving === u.email && <span className="text-xs text-[var(--text-light)]">Saving…</span>}
                   </div>
                 </div>
-                <div className="flex-shrink-0 flex items-center gap-2">
-                  <select
-                    className="settings-select text-sm"
-                    value={u.role}
-                    disabled={!can('team:manage') || saving === u.email}
-                    onChange={(e) => void changeRole(u.email, e.target.value)}
-                    title={roleDesc(u.role)}
-                  >
-                    {roles.map((r) => (
-                      <option key={r.name} value={r.name}>{r.name.charAt(0).toUpperCase() + r.name.slice(1)}</option>
-                    ))}
-                  </select>
-                  {saving === u.email && <span className="text-xs text-[var(--text-light)]">Saving…</span>}
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </>
         )}
       </Card>
 
@@ -935,6 +956,15 @@ function RolesTab() {
   const [newRole, setNewRole] = useState({ name: '', description: '', permissions: [] as string[] })
   const [newError, setNewError] = useState('')
 
+  // Pagination for roles
+  const rolesPagination = usePagination({
+    items: roles,
+    pageSize: 10,
+    searchFn: (r, query) =>
+      r.name.toLowerCase().includes(query) ||
+      r.description.toLowerCase().includes(query),
+  })
+
   useEffect(() => { void load() }, [])
 
   async function load() {
@@ -1015,8 +1045,15 @@ function RolesTab() {
           Custom roles can be fully managed and assigned to users on the Users &amp; Roles tab.
         </p>
 
+        <ListControls
+          pagination={rolesPagination}
+          searchPlaceholder="Search roles..."
+          pageSizeOptions={[10, 25, 50]}
+          className="mb-4"
+        />
+
         <div className="divide-y divide-[var(--border)]">
-          {roles.map((role) => {
+          {rolesPagination.paginatedItems.map((role) => {
             const isExpanded = expandedId === role.id
             const draft = editing[role.id]
             const isDirty = !!draft

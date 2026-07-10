@@ -129,6 +129,73 @@ func (s *Server) assistantStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, status)
 }
 
+// assistantListTools handles GET /api/v1/assistant/tools
+func (s *Server) assistantListTools(c *gin.Context) {
+	tools := s.assistant.AvailableTools()
+	c.JSON(http.StatusOK, gin.H{"tools": tools})
+}
+
+// assistantExecuteTool handles POST /api/v1/assistant/tools/execute
+func (s *Server) assistantExecuteTool(c *gin.Context) {
+	var req struct {
+		ToolCall       assistant.ToolCall `json:"tool_call"`
+		ConversationID string             `json:"conversation_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Get user ID from auth context
+	userID := "anonymous"
+	if id, exists := c.Get("user_id"); exists {
+		userID = id.(string)
+	}
+
+	result, err := s.assistant.ExecuteTool(c.Request.Context(), req.ToolCall, userID, req.ConversationID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// assistantListActions handles GET /api/v1/assistant/actions
+func (s *Server) assistantListActions(c *gin.Context) {
+	// Get user ID from auth context
+	userID := "anonymous"
+	if id, exists := c.Get("user_id"); exists {
+		userID = id.(string)
+	}
+
+	// Query recent actions for this user
+	rows, err := s.db.QueryContext(c.Request.Context(), `
+		SELECT id, conversation_id, tool_name, arguments, result, success, created_at
+		FROM assistant_action_log
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+		LIMIT 50
+	`, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	var actions []assistant.ActionLog
+	for rows.Next() {
+		var a assistant.ActionLog
+		if err := rows.Scan(&a.ID, &a.ConversationID, &a.ToolName, &a.Arguments, &a.Result, &a.Success, &a.CreatedAt); err != nil {
+			continue
+		}
+		a.UserID = userID
+		actions = append(actions, a)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"actions": actions})
+}
+
 // registerAssistantRoutes adds assistant endpoints to the router.
 func (s *Server) registerAssistantRoutes(v1 *gin.RouterGroup) {
 	if s.assistant == nil {
@@ -150,5 +217,9 @@ func (s *Server) registerAssistantRoutes(v1 *gin.RouterGroup) {
 		ast.DELETE("/conversations", s.assistantDeleteAllConversations)
 		ast.GET("/conversations/:id", s.assistantGetConversation)
 		ast.DELETE("/conversations/:id", s.assistantDeleteConversation)
+		// Agentic tool endpoints
+		ast.GET("/tools", s.assistantListTools)
+		ast.POST("/tools/execute", s.assistantExecuteTool)
+		ast.GET("/actions", s.assistantListActions)
 	}
 }

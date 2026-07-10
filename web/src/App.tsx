@@ -9,6 +9,7 @@ import AnalyticsPage from './pages/AnalyticsPage'
 import PoliciesPage from './pages/PoliciesPage'
 import AlertsPage from './pages/AlertsPage'
 import AssistantPage from './pages/AssistantPage'
+import AutoPRPage from './pages/AutoPRPage'
 import LoginPage from './pages/LoginPage'
 import ReposPage from './pages/ReposPage'
 import RepoDetailPage from './pages/RepoDetailPage'
@@ -106,6 +107,7 @@ function AppRoutes() {
           <Route path="repos" element={<ReposPage />} />
           <Route path="repos/detail" element={<RepoDetailPage />} />
           <Route path="assistant" element={<AssistantPage />} />
+          <Route path="auto-pr" element={<AutoPRPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
@@ -234,6 +236,19 @@ const AssistantIcon = ({ className }: NavIconProps) => (
     <path d="M12 2l1.5 4.5L18 8l-4.5 1.5L12 14l-1.5-4.5L6 8l4.5-1.5L12 2z"/>
     <path d="M5 16l1 3 3 1-3 1-1 3-1-3-3-1 3-1 1-3z"/>
     <path d="M19 14l.75 2.25L22 17l-2.25.75L19 20l-.75-2.25L16 17l2.25-.75L19 14z"/>
+  </svg>
+)
+
+const AutoPRIcon = ({ className }: NavIconProps) => (
+  <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {/* Git PR merge icon */}
+    <circle cx="6" cy="6" r="3"/>
+    <circle cx="6" cy="18" r="3"/>
+    <path d="M6 9v6"/>
+    <circle cx="18" cy="18" r="3"/>
+    <path d="M18 9a9 9 0 0 0-9 9"/>
+    <path d="M18 3v6"/>
+    <path d="M15 6h6"/>
   </svg>
 )
 
@@ -393,6 +408,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
         <SideLink to="/app/analytics" onClick={closeMobile} collapsed={desktopCollapsed} icon={AnalyticsIcon}>Analytics</SideLink>
         <SideLink to="/app/history" onClick={closeMobile} collapsed={desktopCollapsed} icon={HistoryIcon}>Activity</SideLink>
         <SideLink to="/app/assistant" onClick={closeMobile} collapsed={desktopCollapsed} icon={AssistantIcon}>AI Assistant</SideLink>
+        <SideLink to="/app/auto-pr" onClick={closeMobile} collapsed={desktopCollapsed} icon={AutoPRIcon}>Auto PR</SideLink>
         <SideLink to="/app/settings" onClick={closeMobile} collapsed={desktopCollapsed} icon={SettingsIcon}>Settings</SideLink>
 
         <div className="mt-auto flex flex-col pt-4 border-t border-[var(--sidebar-border)]">
