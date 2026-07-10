@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { usePagination } from '../hooks/usePagination'
 import { ListControls } from '../components/ListControls'
@@ -16,6 +16,13 @@ export default function RunHistoryPage() {
   const [comparison, setComparison] = useState<RunDiff | null>(null)
   const [comparing, setComparing] = useState(false)
   const [showComparison, setShowComparison] = useState(false)
+  
+  // Track the job_id being compared (enforces same-job comparison)
+  const comparisonJobId = useMemo(() => {
+    if (selectedRuns.size === 0) return null
+    const firstId = Array.from(selectedRuns)[0]
+    return runs.find(r => r.id === firstId)?.job_id ?? null
+  }, [selectedRuns, runs])
 
   // Pagination with search
   const pagination = usePagination({
@@ -53,16 +60,27 @@ export default function RunHistoryPage() {
     }
   }
 
-  function toggleSelection(id: number) {
+  function toggleSelection(id: number, jobId: string) {
     setSelectedRuns(prev => {
       const next = new Set(prev)
       if (next.has(id)) {
         next.delete(id)
       } else if (next.size < 2) {
-        next.add(id)
+        // Only allow selecting runs from the same job
+        if (next.size === 0 || jobId === comparisonJobId) {
+          next.add(id)
+        }
       }
       return next
     })
+  }
+  
+  // Check if a run can be selected (same job as first selection)
+  function canSelectRun(run: RunSnapshot): boolean {
+    if (selectedRuns.has(run.id)) return true // Always allow deselecting
+    if (selectedRuns.size >= 2) return false // Max 2 selected
+    if (selectedRuns.size === 0) return true // First selection
+    return run.job_id === comparisonJobId // Must match first selection's job
   }
 
   async function compareRuns() {
@@ -137,20 +155,30 @@ export default function RunHistoryPage() {
       {/* Comparison bar */}
       {selectedRuns.size > 0 && (
         <div className="bg-[var(--cream-alt)] border border-[var(--border)] rounded-lg p-3 mb-4 flex items-center justify-between">
-          <span className="text-sm text-[var(--text)]">
-            {selectedRuns.size} run{selectedRuns.size > 1 ? 's' : ''} selected
-          </span>
+          <div className="text-sm text-[var(--text)]">
+            <span className="font-medium">{selectedRuns.size} run{selectedRuns.size > 1 ? 's' : ''}</span>
+            {comparisonJobId && (
+              <span className="ml-2 text-[var(--text-light)]">
+                from <code className="font-mono text-xs bg-[var(--paper)] px-1.5 py-0.5 rounded">{comparisonJobId}</code>
+              </span>
+            )}
+            {selectedRuns.size === 1 && (
+              <span className="ml-2 text-[var(--text-light)] text-xs">
+                — select another run from the same job to compare
+              </span>
+            )}
+          </div>
           <div className="flex gap-2">
             <button
               onClick={() => setSelectedRuns(new Set())}
-              className="px-3 py-1.5 text-xs border border-[var(--border)] rounded bg-[var(--paper)] hover:bg-[var(--cream-alt)]"
+              className="px-3 py-1.5 text-xs border border-[var(--border)] rounded bg-[var(--paper)] hover:bg-[var(--cream-alt)] cursor-pointer"
             >
               Clear
             </button>
             <button
               onClick={compareRuns}
               disabled={selectedRuns.size !== 2 || comparing}
-              className="px-3 py-1.5 text-xs bg-[var(--red)] text-white rounded disabled:opacity-50"
+              className="px-3 py-1.5 text-xs bg-[var(--red)] text-white rounded disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
             >
               {comparing ? 'Comparing...' : 'Compare'}
             </button>
@@ -181,12 +209,16 @@ export default function RunHistoryPage() {
             pageSizeOptions={[10, 20, 50, 100]}
           />
           <div className="space-y-3">
-            {pagination.paginatedItems.map((run) => (
+            {pagination.paginatedItems.map((run) => {
+              const selectable = canSelectRun(run)
+              return (
               <div
                 key={run.id}
                 className={`bg-paper border rounded-lg p-4 transition-colors ${
                   selectedRuns.has(run.id) 
                     ? 'border-[var(--red)] ring-1 ring-[var(--red)]' 
+                    : !selectable
+                    ? 'border-[var(--border)] opacity-50'
                     : 'border-[var(--border)] hover:border-[var(--text-light)]'
                 }`}
               >
@@ -194,9 +226,10 @@ export default function RunHistoryPage() {
                   <input
                     type="checkbox"
                     checked={selectedRuns.has(run.id)}
-                    onChange={() => toggleSelection(run.id)}
-                    disabled={!selectedRuns.has(run.id) && selectedRuns.size >= 2}
-                    className="mt-1 w-4 h-4 accent-[var(--red)]"
+                    onChange={() => toggleSelection(run.id, run.job_id)}
+                    disabled={!selectable}
+                    className="mt-1 w-4 h-4 accent-[var(--red)] cursor-pointer disabled:cursor-not-allowed"
+                    title={!selectable && selectedRuns.size > 0 ? `Can only compare runs from "${comparisonJobId}"` : undefined}
                   />
                   <Link
                     to={`/app/jobs/group/${encodeURIComponent(run.job_id)}`}
@@ -251,7 +284,8 @@ export default function RunHistoryPage() {
                   </Link>
                 </div>
               </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}
@@ -267,49 +301,93 @@ export default function RunHistoryPage() {
   )
 }
 
-// Comparison Modal
+// Comparison Panel - slides in from right, less disruptive
 function ComparisonModal({ diff, onClose }: { diff: RunDiff; onClose: () => void }) {
+  // Close on Escape key
+  useEffect(() => {
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleEscape)
+    return () => document.removeEventListener('keydown', handleEscape)
+  }, [onClose])
+  
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-[var(--paper)] rounded-lg max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-        <div className="border-b border-[var(--border)] p-4 flex items-center justify-between sticky top-0 bg-[var(--paper)]">
-          <h2 className="font-serif text-xl font-bold">Run Comparison</h2>
-          <button onClick={onClose} className="text-[var(--text-light)] hover:text-[var(--text)] text-2xl">&times;</button>
-        </div>
-        
-        <div className="p-6">
-          {/* Side by side run cards */}
-          <div className="grid grid-cols-2 gap-4 mb-6">
-            <RunCard run={diff.before} label="Before (Baseline)" color="blue" />
-            <RunCard run={diff.after} label="After (Current)" color="green" />
-          </div>
-
-          {/* Delta summary */}
-          <div className="bg-[var(--cream-alt)] rounded-lg p-4 mb-6">
-            <h3 className="font-medium text-sm text-[var(--text-light)] mb-3 uppercase tracking-wide">Changes</h3>
-            <div className="grid grid-cols-5 gap-4 text-center">
-              <DeltaCard label="CPU" value={diff.cpu_delta_percent} unit="%" isPercent />
-              <DeltaCard label="Memory" value={diff.memory_delta_gib} unit=" GiB" />
-              <DeltaCard label="Duration" value={diff.duration_delta_seconds} unit="s" />
-              <DeltaCard label="Cost" value={diff.cost_delta_usd} unit="%" isPercent />
-              <DeltaCard label="Carbon" value={diff.carbon_delta_kg * 1000} unit="g" />
-            </div>
-          </div>
-
-          {/* Insights */}
-          {diff.insights && diff.insights.length > 0 && (
+    <>
+      {/* Backdrop - click to close */}
+      <div 
+        className="fixed inset-0 bg-black/30 z-40 transition-opacity"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      
+      {/* Slide-over panel */}
+      <div className="fixed inset-y-0 right-0 z-50 w-full max-w-xl overflow-hidden">
+        <div className="h-full bg-[var(--paper)] shadow-2xl flex flex-col animate-slide-in-right">
+          {/* Header */}
+          <div className="border-b border-[var(--border)] p-4 flex items-center justify-between bg-[var(--cream-alt)]">
             <div>
-              <h3 className="font-medium text-sm text-[var(--text-light)] mb-3 uppercase tracking-wide">Insights</h3>
-              <div className="space-y-2">
-                {diff.insights.map((insight, i) => (
-                  <InsightCard key={i} insight={insight} />
-                ))}
+              <h2 className="font-serif text-xl font-bold text-[var(--text)]">Run Comparison</h2>
+              <p className="text-xs text-[var(--text-light)] mt-0.5 font-mono">{diff.before.job_id}</p>
+            </div>
+            <button 
+              onClick={onClose} 
+              className="p-2 rounded-lg hover:bg-[var(--paper)] text-[var(--text-light)] hover:text-[var(--text)] transition-colors cursor-pointer"
+              aria-label="Close"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          
+          {/* Content */}
+          <div className="flex-1 overflow-y-auto p-5 space-y-5">
+            {/* Side by side run cards */}
+            <div className="grid grid-cols-2 gap-3">
+              <RunCard run={diff.before} label="Before" color="blue" />
+              <RunCard run={diff.after} label="After" color="green" />
+            </div>
+
+            {/* Delta summary */}
+            <div className="bg-[var(--cream-alt)] rounded-lg p-4">
+              <h3 className="font-medium text-xs text-[var(--text-light)] mb-3 uppercase tracking-wider">Changes</h3>
+              <div className="grid grid-cols-3 gap-3 text-center">
+                <DeltaCard label="CPU" value={diff.cpu_delta_percent} unit="%" isPercent />
+                <DeltaCard label="Memory" value={diff.memory_delta_gib} unit=" GiB" />
+                <DeltaCard label="Duration" value={diff.duration_delta_seconds} unit="s" />
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-center mt-3 pt-3 border-t border-[var(--border)]">
+                <DeltaCard label="Est. Cost" value={diff.cost_delta_usd} unit="%" isPercent />
+                <DeltaCard label="Carbon" value={diff.carbon_delta_kg * 1000} unit="g CO₂" />
               </div>
             </div>
-          )}
+
+            {/* Insights */}
+            {diff.insights && diff.insights.length > 0 && (
+              <div>
+                <h3 className="font-medium text-xs text-[var(--text-light)] mb-3 uppercase tracking-wider">Insights</h3>
+                <div className="space-y-2">
+                  {diff.insights.map((insight, i) => (
+                    <InsightCard key={i} insight={insight} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          
+          {/* Footer */}
+          <div className="border-t border-[var(--border)] p-4 bg-[var(--cream-alt)]">
+            <button 
+              onClick={onClose}
+              className="w-full px-4 py-2 text-sm bg-[var(--paper)] border border-[var(--border)] rounded-lg hover:bg-[var(--cream-alt)] cursor-pointer transition-colors"
+            >
+              Done
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </>
   )
 }
 
@@ -318,9 +396,9 @@ function RunCard({ run, label, color }: { run: RunSnapshot; label: string; color
   const accentText   = color === 'blue' ? 'text-[var(--navy)]'    : 'text-[var(--gold)]'
 
   return (
-    <div className={`bg-[var(--paper)] border border-[var(--border)] border-l-4 ${accentBorder} rounded-lg p-4`}>
-      <div className={`text-sm font-medium ${accentText} mb-3`}>{label} — Run #{run.id}</div>
-      <div className="space-y-2 text-sm">
+    <div className={`bg-[var(--paper)] border border-[var(--border)] border-l-4 ${accentBorder} rounded-lg p-3`}>
+      <div className={`text-xs font-medium ${accentText} mb-2`}>{label} — #{run.id}</div>
+      <div className="space-y-1.5 text-xs">
         <div className="flex justify-between">
           <span className="text-[var(--text-light)]">Duration</span>
           <span className="font-mono">{run.duration_seconds.toFixed(0)}s</span>
@@ -335,11 +413,7 @@ function RunCard({ run, label, color }: { run: RunSnapshot; label: string; color
         </div>
         <div className="flex justify-between">
           <span className="text-[var(--text-light)]">Machine</span>
-          <span className="font-mono text-xs">{run.detected_machine || '-'}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-[var(--text-light)]">Carbon</span>
-          <span className="font-mono">{(run.est_carbon_kg * 1000).toFixed(1)}g CO₂</span>
+          <span className="font-mono text-[10px]">{run.detected_machine || '-'}</span>
         </div>
       </div>
     </div>
