@@ -296,8 +296,24 @@ func (a *Assistant) executeCreateAlertRule(ctx context.Context, args json.RawMes
 		return "", fmt.Errorf("failed to create alert rule: %w", err)
 	}
 
-	return fmt.Sprintf("✅ Created alert rule '%s' (ID: %s). It will trigger when %s exceeds %.2f and notify via %s.",
-		params.Name, id[:8], params.ConditionType, params.Threshold, params.Channel), nil
+	// Build scope description
+	scope := "global"
+	if params.Repository != "" && params.JobID != "" {
+		scope = fmt.Sprintf("job `%s` in `%s`", params.JobID, params.Repository)
+	} else if params.Repository != "" {
+		scope = fmt.Sprintf("repository `%s`", params.Repository)
+	}
+
+	return fmt.Sprintf(`✅ **Created alert rule "%s"**
+
+| Setting | Value |
+|---------|-------|
+| Scope | %s |
+| Condition | %s > %.0f%% |
+| Notify via | %s → %s |
+
+🔗 [View in Alerts Dashboard](/app/alerts)`, 
+		params.Name, scope, params.ConditionType, params.Threshold, params.Channel, params.Destination), nil
 }
 
 func (a *Assistant) executeCreatePolicy(ctx context.Context, args json.RawMessage) (string, error) {
@@ -329,12 +345,22 @@ func (a *Assistant) executeCreatePolicy(ctx context.Context, args json.RawMessag
 
 	scope := "global"
 	if params.Repository != "" && params.JobID != "" {
-		scope = fmt.Sprintf("job %s in %s", params.JobID, params.Repository)
+		scope = fmt.Sprintf("job `%s` in `%s`", params.JobID, params.Repository)
 	} else if params.Repository != "" {
-		scope = fmt.Sprintf("repository %s", params.Repository)
+		scope = fmt.Sprintf("repository `%s`", params.Repository)
 	}
 
-	return fmt.Sprintf("✅ Created cost policy for %s with max $%.2f/hr. CI jobs exceeding this will be flagged.", scope, params.MaxCostPerHour), nil
+	return fmt.Sprintf(`✅ **Created cost policy**
+
+| Setting | Value |
+|---------|-------|
+| Scope | %s |
+| Max Cost | $%.2f/hr |
+| Status | Enabled |
+
+CI jobs exceeding this limit will be flagged.
+
+🔗 [View in Policies Dashboard](/app/policies)`, scope, params.MaxCostPerHour), nil
 }
 
 func (a *Assistant) executeSnoozeJob(ctx context.Context, args json.RawMessage) (string, error) {

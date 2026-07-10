@@ -773,8 +773,198 @@ func (a *Assistant) callOllama(ctx context.Context, memorySummary string, histor
 	return result.Message.Content, nil
 }
 
-// callOpenAI calls the OpenAI Chat API.
+// callOpenAI calls the OpenAI Chat API with function calling support.
 func (a *Assistant) callOpenAI(ctx context.Context, memorySummary string, history []types.ChatMessage, assistantCtx *types.AssistantContext, userMessage string) (string, error) {
+	// Message types for OpenAI API
+	type toolCallFunction struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	type toolCallResponse struct {
+		ID       string           `json:"id"`
+		Type     string           `json:"type"`
+		Function toolCallFunction `json:"function"`
+	}
+	type message struct {
+		Role       string             `json:"role"`
+		Content    string             `json:"content,omitempty"`
+		ToolCalls  []toolCallResponse `json:"tool_calls,omitempty"`
+		ToolCallID string             `json:"tool_call_id,omitempty"`
+	}
+	type toolFunction struct {
+		Name        string      `json:"name"`
+		Description string      `json:"description"`
+		Parameters  interface{} `json:"parameters"`
+	}
+	type tool struct {
+		Type     string       `json:"type"`
+		Function toolFunction `json:"function"`
+	}
+	type request struct {
+		Model       string    `json:"model"`
+		Messages    []message `json:"messages"`
+		Tools       []tool    `json:"tools,omitempty"`
+		MaxTokens   int       `json:"max_tokens,omitempty"`
+		Temperature float64   `json:"temperature,omitempty"`
+	}
+	type choiceMessage struct {
+		Role      string             `json:"role"`
+		Content   string             `json:"content"`
+		ToolCalls []toolCallResponse `json:"tool_calls,omitempty"`
+	}
+	type choice struct {
+		Message      choiceMessage `json:"message"`
+		FinishReason string        `json:"finish_reason"`
+	}
+	type response struct {
+		Choices []choice `json:"choices"`
+		Error   *struct {
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+
+	// Convert our tools to OpenAI format
+	var openaiTools []tool
+	for _, t := range a.AvailableTools() {
+		openaiTools = append(openaiTools, tool{
+			Type: "function",
+			Function: toolFunction{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.Parameters,
+			},
+		})
+	}
+
+	// Build initial messages
+	messages := []message{{Role: "system", Content: a.systemPrompt()}}
+
+	if memorySummary != "" {
+		messages = append(messages, message{
+			Role:    "system",
+			Content: "CONVERSATION MEMORY (summary of earlier turns):\n" + memorySummary,
+		})
+	}
+
+	if assistantCtx.SemanticContext != "" {
+		messages = append(messages, message{
+			Role:    "system",
+			Content: "RELEVANT CONTEXT (semantic search):\n" + assistantCtx.SemanticContext,
+		})
+	}
+
+	messages = append(messages, message{
+		Role:    "system",
+		Content: "Current RunRight data:\n" + formatContextAsText(assistantCtx),
+	})
+
+	for _, h := range history {
+		if h.Role == "user" || h.Role == "assistant" {
+			messages = append(messages, message{Role: h.Role, Content: h.Content})
+		}
+	}
+
+	messages = append(messages, message{Role: "user", Content: userMessage})
+
+	// Tool execution loop (max 5 iterations to prevent infinite loops)
+	for iteration := 0; iteration < 5; iteration++ {
+		reqBody := request{
+			Model:       a.cfg.Model,
+			Messages:    messages,
+			Tools:       openaiTools,
+			MaxTokens:   2048,
+			Temperature: 0.3,
+		}
+
+		body, err := json.Marshal(reqBody)
+		if err != nil {
+			return "", err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+a.cfg.APIKey)
+
+		resp, err := a.client.Do(req)
+		if err != nil {
+			return "", err
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return "", err
+		}
+
+		var result response
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return "", fmt.Errorf("parse response: %w", err)
+		}
+
+		if result.Error != nil {
+			return "", fmt.Errorf("OpenAI API error: %s", result.Error.Message)
+		}
+
+		if len(result.Choices) == 0 {
+			return "", fmt.Errorf("no response from OpenAI")
+		}
+
+		choice := result.Choices[0]
+
+		// If no tool calls, return the content
+		if len(choice.Message.ToolCalls) == 0 || choice.FinishReason == "stop" {
+			return choice.Message.Content, nil
+		}
+
+		// Process tool calls
+		// Add assistant message with tool calls to history
+		messages = append(messages, message{
+			Role:      "assistant",
+			Content:   choice.Message.Content,
+			ToolCalls: choice.Message.ToolCalls,
+		})
+
+		// Execute each tool and add results
+		for _, tc := range choice.Message.ToolCalls {
+			toolCall := ToolCall{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: json.RawMessage(tc.Function.Arguments),
+			}
+
+			// Execute the tool (using anonymous user for now - TODO: pass real user ID)
+			toolResult, err := a.ExecuteTool(ctx, toolCall, "assistant", "")
+			if err != nil {
+				// Add error result
+				messages = append(messages, message{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Content:    fmt.Sprintf("Error executing tool: %s", err.Error()),
+				})
+			} else {
+				// Add success result
+				resultContent := toolResult.Result
+				if !toolResult.Success && toolResult.Error != "" {
+					resultContent = "Error: " + toolResult.Error
+				}
+				messages = append(messages, message{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Content:    resultContent,
+				})
+			}
+		}
+		// Loop continues to get final response after tool execution
+	}
+
+	return "", fmt.Errorf("max tool iterations exceeded")
+}
+
+// callOpenAILegacy is the old implementation without tools (fallback).
+func (a *Assistant) callOpenAILegacy(ctx context.Context, memorySummary string, history []types.ChatMessage, assistantCtx *types.AssistantContext, userMessage string) (string, error) {
 	type message struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
