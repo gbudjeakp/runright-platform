@@ -14,6 +14,8 @@ import LoginPage from './pages/LoginPage'
 import ReposPage from './pages/ReposPage'
 import RepoDetailPage from './pages/RepoDetailPage'
 import RunHistoryPage from './pages/RunHistoryPage'
+import ChatWidget from './components/ChatWidget'
+import { PageDataProvider } from './contexts/PageDataContext'
 import { logout, fetchCurrentUser } from './api'
 import type { CurrentUser } from './types'
 import LogoMark from './components/LogoMark'
@@ -352,6 +354,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
   const closeMobile = () => setMobileOpen(false)
 
   return (
+    <PageDataProvider>
     <div className="min-h-screen overflow-x-hidden bg-[var(--cream)] text-[var(--text)] md:flex md:h-[100dvh] md:overflow-hidden">
 
       {/* ── Sidebar ── */}
@@ -439,6 +442,10 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
 
         <Outlet />
       </main>
+
+      {/* Floating AI Chat Widget */}
+      <ChatWidget />
     </div>
+    </PageDataProvider>
   )
 }

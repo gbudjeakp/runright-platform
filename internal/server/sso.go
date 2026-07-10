@@ -849,8 +849,10 @@ func generateState() string {
 func (s *Server) ssoAuthMiddleware(apiKey string, disableAuth bool) gin.HandlerFunc {
 	apiKeyHash := hashAPIKey(apiKey)
 	return func(c *gin.Context) {
-		// If auth is disabled, skip
+		// If auth is disabled, set a dev user and skip
 		if disableAuth {
+			c.Set("user_email", "dev@runright.io")
+			c.Set("sso_email", "dev@runright.io")
 			c.Next()
 			return
 		}
@@ -886,6 +888,7 @@ func (s *Server) ssoAuthMiddleware(apiKey string, disableAuth bool) gin.HandlerF
 				// Set user info in context
 				c.Set("sso_user_id", sess.UserID)
 				c.Set("sso_email", sess.Email)
+				c.Set("user_email", sess.Email) // Also set user_email for assistant tools
 				c.Set("sso_provider", sess.Provider)
 				c.Next()
 				return

@@ -374,6 +374,15 @@ export interface ChatRequest {
   message: string
   repository?: string
   job_id?: string
+  page_context?: PageContext
+}
+
+export interface PageContext {
+  page: string
+  entity_id?: string
+  entity_type?: string
+  metadata?: Record<string, unknown>
+  page_data?: Record<string, unknown>
 }
 
 export interface DataSource {

@@ -463,10 +463,10 @@ function APIKeysTab() {
   return (
     <div className="space-y-6">
       {createdKey && (
-        <Card title="New API Key Created" className="bg-green-50 border-green-200">
+        <Card title="New API Key Created" className="bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800">
           <div className="space-y-3">
-            <p className="text-sm text-green-800">Copy this key now. It won't be shown again.</p>
-            <div className="bg-white border border-green-300 rounded px-4 py-3 font-mono text-sm break-all">
+            <p className="text-sm text-green-800 dark:text-green-300">Copy this key now. It won't be shown again.</p>
+            <div className="bg-[var(--paper)] border border-green-300 dark:border-green-700 rounded px-4 py-3 font-mono text-sm break-all text-[var(--text)]">
               {createdKey}
             </div>
             <button onClick={() => setCreatedKey(null)} className="settings-btn-secondary">Done</button>
@@ -1254,7 +1254,7 @@ function AuditTab() {
 
 function Card({ title, action, children, className = '' }: { title: string; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
-    <div className={`bg-white border border-[var(--border)] rounded-lg shadow-sm ${className}`}>
+    <div className={`bg-[var(--paper)] border border-[var(--border)] rounded-lg shadow-sm ${className}`}>
       <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
         <h2 className="font-semibold text-[var(--text)]">{title}</h2>
         {action}

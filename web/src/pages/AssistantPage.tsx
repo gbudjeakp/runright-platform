@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   fetchAssistantStatus,
   fetchSuggestedQuestions,
@@ -11,6 +12,7 @@ import {
 } from '../api'
 import type { ChatMessage, Conversation, QuickStats, DataSource, AssistantStatus } from '../types'
 import { ConfirmModal } from '../components/ConfirmModal'
+import { usePageContext } from '../hooks/usePageContext'
 
 // ─── Icons ──────────────────────────────────────────────────────────────────
 const SendIcon = () => (
@@ -145,6 +147,14 @@ const formatInline = (text: string) => {
   text = text.replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-[var(--text)]">$1</strong>')
   // Inline code
   text = text.replace(/`([^`]+)`/g, '<code class="px-1.5 py-0.5 rounded bg-[var(--ink)]/10 font-mono text-sm">$1</code>')
+  // Links - style internal links specially
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, linkText, href) => {
+    const isInternal = href.startsWith('/app/')
+    const classes = isInternal 
+      ? 'text-[var(--gold)] hover:underline cursor-pointer font-medium'
+      : 'text-[var(--gold)] hover:underline'
+    return `<a href="${href}" class="${classes}" data-internal="${isInternal}">${linkText}</a>`
+  })
   // Return as HTML
   return <span dangerouslySetInnerHTML={{ __html: text }} />
 }
@@ -167,8 +177,22 @@ export default function AssistantPage() {
   const [summaryExpanded, setSummaryExpanded] = useState(false)
   const [confirmModal, setConfirmModal] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
 
+  const pageContext = usePageContext()
+  const navigate = useNavigate()
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  // Handle clicks on internal links in assistant messages
+  const handleMessageClick = useCallback((e: React.MouseEvent) => {
+    const target = e.target as HTMLElement
+    if (target.tagName === 'A') {
+      const href = target.getAttribute('href')
+      if (href?.startsWith('/app/')) {
+        e.preventDefault()
+        navigate(href)
+      }
+    }
+  }, [navigate])
 
   // Check status on mount
   useEffect(() => {
@@ -275,6 +299,7 @@ export default function AssistantPage() {
       const response = await sendChatMessage({
         conversation_id: currentConvId ?? undefined,
         message: text,
+        page_context: pageContext,
       })
 
       if (!currentConvId) {
@@ -305,7 +330,7 @@ export default function AssistantPage() {
     } finally {
       setLoading(false)
     }
-  }, [input, loading, currentConvId])
+  }, [input, loading, currentConvId, pageContext])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -628,12 +653,15 @@ export default function AssistantPage() {
                             </button>
                           </div>
                         )}
-                        <div className={`
+                        <div 
+                          className={`
                           max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed
                           ${msg.role === 'user'
                             ? 'bg-ink text-cream shadow-sm'
                             : 'bg-ink/5 text-[var(--text)]'}
-                        `}>
+                        `}
+                          onClick={msg.role === 'assistant' ? handleMessageClick : undefined}
+                        >
                           {renderMarkdown(msg.content)}
                         </div>
                       </>

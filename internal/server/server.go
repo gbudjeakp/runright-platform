@@ -2422,8 +2422,9 @@ func authLogout() gin.HandlerFunc {
 func (s *Server) authMiddleware(apiKey string, disableAuth bool) gin.HandlerFunc {
 	apiKeyHash := hashAPIKey(apiKey)
 	return func(c *gin.Context) {
-		// Dev mode / no key configured — skip auth entirely.
+		// Dev mode / no key configured — set a dev user and skip auth.
 		if disableAuth || apiKey == "" {
+			c.Set("user_email", "dev@runright.io")
 			c.Next()
 			return
 		}

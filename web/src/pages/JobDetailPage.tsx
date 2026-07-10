@@ -6,6 +6,7 @@ import {
 } from 'recharts'
 import { fetchJob } from '../api'
 import { formatFromUSD, useCurrencyPreference } from '../currency'
+import { usePageData } from '../contexts/PageDataContext'
 import type { Job, Recommendation, GPUSummary, CacheStats, ContainerSummary, EgressSummary } from '../types'
 
 function TierBadge({ tier }: { tier: string }) {
@@ -29,6 +30,7 @@ export default function JobDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { currency } = useCurrencyPreference()
+  const { setPageData, clearPageData } = usePageData()
   const [job, setJob] = useState<Job | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -36,10 +38,34 @@ export default function JobDetailPage() {
   useEffect(() => {
     if (!id) return
     fetchJob(Number(id))
-      .then(setJob)
+      .then((j) => {
+        setJob(j)
+        // Provide job data to the AI assistant context
+        const s = j.summary
+        const topRec = j.recommendations?.[0]
+        setPageData({
+          job_id: j.job_id,
+          repository: j.repository,
+          duration_seconds: s?.duration_seconds,
+          cpu_avg: s?.cpu_percent_avg,
+          cpu_p95: s?.cpu_percent_p95,
+          cpu_peak: s?.cpu_percent_peak,
+          mem_avg_gib: s?.mem_used_gib_avg,
+          mem_p95_gib: s?.mem_used_gib_p95,
+          mem_peak_gib: s?.mem_used_gib_peak,
+          detected_machine: s?.detected_machine?.id,
+          detected_machine_confidence: s?.detected_machine_confidence_level,
+          recommendations_count: j.recommendations?.length ?? 0,
+          top_recommendation: topRec?.machine?.id,
+          top_recommendation_savings_percent: topRec?.cost_delta_percent,
+          top_recommendation_monthly_savings: topRec ? (topRec.current_monthly_usd - topRec.estimated_monthly_usd) : 0,
+        })
+      })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
-  }, [id])
+
+    return () => clearPageData()
+  }, [id, setPageData, clearPageData])
 
   if (loading) return <div className="empty">Loading job…</div>
   if (error || !job) return <div className="empty">Job not found: {error}</div>
