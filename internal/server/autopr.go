@@ -547,6 +547,16 @@ func (s *Server) approvePRRecommendation(c *gin.Context) {
 	prURL := prResult.PRURL
 	prNumber := prResult.PRNumber
 
+	// Defensive: CreateRunnerRightSizePR should always return a URL or error.
+	// If PRURL is empty despite no error, surface it rather than silently
+	// marking approved with no link (which leaves the card stuck forever).
+	if prURL == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("PR was created on branch %s but the URL was not returned by GitHub — check github.com/%s/pulls manually", prResult.Branch, rec.Repository),
+		})
+		return
+	}
+
 	// Record in PR history
 	s.db.ExecContext(ctx, `
 		INSERT INTO pr_history (id, recommendation_id, team_id, repository, job_id,

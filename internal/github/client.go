@@ -187,10 +187,25 @@ func (c *Client) CreateRunnerRightSizePR(ctx context.Context, opts PROptions) (*
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pull request: %w", err)
 	}
+	if pr == nil {
+		return nil, fmt.Errorf("PR creation returned empty response — check github.com/%s/%s/pulls for the PR on branch %s", owner, repo, branchName)
+	}
+
+	prURL := pr.GetHTMLURL()
+	prNumber := pr.GetNumber()
+
+	// Fallback: construct URL from PR number when html_url is not in the response
+	// (rare but possible with some GitHub Enterprise configurations or auth scopes).
+	if prURL == "" && prNumber > 0 {
+		prURL = fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, prNumber)
+	}
+	if prURL == "" {
+		return nil, fmt.Errorf("PR was created on GitHub (branch %s) but the URL was not returned — check github.com/%s/%s/pulls", branchName, owner, repo)
+	}
 
 	return &PRResult{
-		PRURL:    pr.GetHTMLURL(),
-		PRNumber: pr.GetNumber(),
+		PRURL:    prURL,
+		PRNumber: prNumber,
 		Branch:   branchName,
 	}, nil
 }
