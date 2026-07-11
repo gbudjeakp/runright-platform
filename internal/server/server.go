@@ -373,6 +373,9 @@ func (s *Server) createJob(c *gin.Context) {
 	// Rule-based notification routing for completed runs.
 	if status == "completed" {
 		go s.dispatchNotificationRules(p.Summary, p.Recommendations)
+		if p.Summary.Repository != "" {
+			go s.checkAutoPRCandidate(p.Summary.JobID, p.Summary.Repository)
+		}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"id": id})

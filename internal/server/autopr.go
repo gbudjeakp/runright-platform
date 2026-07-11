@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	ghlib "github.com/sgbudje/runright-platform/internal/github"
+	"github.com/sgbudje/runright-platform/internal/types"
 )
 
 // LabelMapping maps a runner label to instance specs
@@ -738,4 +740,167 @@ func (s *Server) listPRHistory(c *gin.Context) {
 // getGitHubClient returns a GitHub API client if GITHUB_TOKEN is set
 func (s *Server) getGitHubClient() (*ghlib.Client, error) {
 	return ghlib.New()
+}
+
+// checkAutoPRCandidate is called after each completed job insertion.
+// It scans the last N completed runs of the same job_id+repository and, when
+// consecutive underutilisation is detected, upserts a pr_recommendations row
+// so it surfaces on the Auto PR page.
+func (s *Server) checkAutoPRCandidate(jobID, repository string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// ── Load settings (fall back to defaults if not configured) ──────────────
+	var minSavingsPct float64 = 20
+	var requireConsec = 5
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT min_savings_percent, require_consecutive_runs FROM auto_pr_settings LIMIT 1`,
+	).Scan(&minSavingsPct, &requireConsec)
+
+	// ── Query the last N completed runs ───────────────────────────────────────
+	type runRow struct {
+		summaryJSON []byte
+		recsJSON    []byte
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT summary, recommendations
+		FROM jobs
+		WHERE job_id = $1
+		  AND ($2 = '' OR repository = $2)
+		  AND status = 'completed'
+		ORDER BY created_at DESC
+		LIMIT $3
+	`, jobID, repository, requireConsec)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var runs []runRow
+	for rows.Next() {
+		var r runRow
+		if err := rows.Scan(&r.summaryJSON, &r.recsJSON); err == nil {
+			runs = append(runs, r)
+		}
+	}
+	if len(runs) < requireConsec {
+		return // not enough history yet
+	}
+
+	// ── Check consecutive underutilisation (p95 CPU < 25 % on all N runs) ────
+	const cpuThreshold = 25.0
+	for _, r := range runs {
+		var summary types.MetricsSummary
+		if err := json.Unmarshal(r.summaryJSON, &summary); err != nil {
+			return
+		}
+		if summary.CPUPercentP95 > cpuThreshold {
+			return
+		}
+	}
+
+	// ── Use the most recent run's data ────────────────────────────────────────
+	var latestSummary types.MetricsSummary
+	var latestRecs []types.Recommendation
+	if err := json.Unmarshal(runs[0].summaryJSON, &latestSummary); err != nil {
+		return
+	}
+	_ = json.Unmarshal(runs[0].recsJSON, &latestRecs)
+
+	if latestSummary.DetectedMachine == nil || len(latestRecs) == 0 {
+		return
+	}
+
+	// Find cheapest recommendation with a meaningful saving
+	var bestRec *types.Recommendation
+	for i := range latestRecs {
+		if latestRecs[i].CostDeltaPercent < 0 {
+			if bestRec == nil || latestRecs[i].CostDeltaPercent < bestRec.CostDeltaPercent {
+				bestRec = &latestRecs[i]
+			}
+		}
+	}
+	if bestRec == nil {
+		return
+	}
+
+	savingsPct := -bestRec.CostDeltaPercent
+	if savingsPct < minSavingsPct {
+		return
+	}
+
+	// ── Resolve runner labels via label_mappings (best-effort) ───────────────
+	currentLabel := latestSummary.DetectedMachine.ID
+	recommendedLabel := bestRec.Machine.ID
+
+	var mapped string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT label FROM label_mappings WHERE instance_type = $1 ORDER BY created_at LIMIT 1`,
+		latestSummary.DetectedMachine.ID,
+	).Scan(&mapped); err == nil && mapped != "" {
+		currentLabel = mapped
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT label FROM label_mappings WHERE instance_type = $1 ORDER BY created_at LIMIT 1`,
+		bestRec.Machine.ID,
+	).Scan(&mapped); err == nil && mapped != "" {
+		recommendedLabel = mapped
+	}
+
+	// ── Estimate monthly savings (assumes ~22 runs / month) ───────────────────
+	const runsPerMonth = 22.0
+	runHours := latestSummary.DurationSeconds / 3600.0
+	currentMonthly := latestSummary.DetectedMachine.OnDemandPricePerHour * runHours * runsPerMonth
+	recommendedMonthly := bestRec.Machine.OnDemandPricePerHour * runHours * runsPerMonth
+	monthlySavings := currentMonthly - recommendedMonthly
+
+	// ── Upsert: update existing pending row, or insert new one ────────────────
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE pr_recommendations
+		SET run_count              = run_count + 1,
+		    consecutive_underutilized = consecutive_underutilized + 1,
+		    p95_cpu_percent        = $1,
+		    p95_mem_percent        = $2,
+		    savings_percent        = $3,
+		    monthly_savings_usd    = $4,
+		    updated_at             = NOW()
+		WHERE repository = $5
+		  AND job_id     = $6
+		  AND status     = 'pending'
+		  AND team_id IS NULL
+	`, latestSummary.CPUPercentP95, latestSummary.MemUsedGiBP95,
+		savingsPct, monthlySavings, repository, jobID)
+	if err != nil {
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		return // updated existing
+	}
+
+	// Insert new recommendation
+	_, _ = s.db.ExecContext(ctx, `
+		INSERT INTO pr_recommendations (
+			id, repository, job_id,
+			current_label, current_vcpus, current_memory_gib, current_cost_per_hour,
+			recommended_label, recommended_vcpus, recommended_memory_gib, recommended_cost_per_hour,
+			p95_cpu_percent, p95_mem_percent,
+			run_count, consecutive_underutilized,
+			savings_percent, monthly_savings_usd, status
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$15,$16,'pending')
+	`, uuid.New().String(), repository, jobID,
+		currentLabel,
+		latestSummary.DetectedMachine.VCPUs,
+		latestSummary.DetectedMachine.MemoryGiB,
+		latestSummary.DetectedMachine.OnDemandPricePerHour,
+		recommendedLabel,
+		bestRec.Machine.VCPUs,
+		bestRec.Machine.MemoryGiB,
+		bestRec.Machine.OnDemandPricePerHour,
+		latestSummary.CPUPercentP95,
+		latestSummary.MemUsedGiBP95,
+		requireConsec,
+		savingsPct,
+		monthlySavings,
+	)
 }
