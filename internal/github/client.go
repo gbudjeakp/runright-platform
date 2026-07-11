@@ -137,6 +137,12 @@ func (c *Client) CreateRunnerRightSizePR(ctx context.Context, opts PROptions) (*
 		// doesn't exactly match the YAML value (e.g. catalog ID vs label).
 		newContent = replaceAnyRunnerLabel(content, opts.NewLabel)
 		if newContent == content {
+			// Distinguish "file already has the recommended label" (previous PR
+			// was likely merged) from "no runs-on line at all".
+			runsOnPattern := regexp.MustCompile(`(?m)runs-on:\s*` + regexp.QuoteMeta(opts.NewLabel))
+			if runsOnPattern.MatchString(content) {
+				return nil, fmt.Errorf("workflow file already uses %s — a previous RunRight PR may have been merged. Dismiss this recommendation if the change is already live", opts.NewLabel)
+			}
 			return nil, fmt.Errorf("no 'runs-on:' line found in workflow file %s", workflowPath)
 		}
 	}
