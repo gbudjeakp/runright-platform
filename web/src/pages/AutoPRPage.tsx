@@ -332,7 +332,7 @@ function RecommendationsTab({ recommendations, approveErrors, approving, onAppro
 
             {rec.status === 'approved' && (
               <div className="flex items-center gap-3 mt-4 pt-4 border-t border-[var(--border)]">
-                <span className="badge badge-gcp">✓ Approved</span>
+                <span className="badge badge-github">✓ Approved</span>
                 {rec.pr_url ? (
                   <a 
                     href={rec.pr_url} 
