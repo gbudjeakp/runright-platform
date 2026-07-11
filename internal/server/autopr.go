@@ -43,10 +43,11 @@ type AutoPRSettings struct {
 	GPUMinSavingsPercent float64  `json:"gpu_min_savings_percent"`
 	ExcludeRepositories  []string `json:"exclude_repositories"`
 	ExcludeJobPatterns   []string `json:"exclude_job_patterns"`
-	// GitHubToken is a per-team PAT used to open PRs; takes precedence over
-	// the GITHUB_TOKEN environment variable.  Stored as plain-text in the DB
-	// (users should create a fine-grained token scoped to their repos).
-	GitHubToken string `json:"github_token,omitempty"`
+	// GitHubToken is write-only: accepted on PUT, NEVER returned on GET.
+	// Use GitHubTokenSet + GitHubTokenHint to show status in the UI.
+	GitHubToken     string `json:"github_token,omitempty"`
+	GitHubTokenSet  bool   `json:"github_token_set"`
+	GitHubTokenHint string `json:"github_token_hint,omitempty"` // last 4 chars, e.g. "…a1b2"
 }
 
 // PRRecommendation represents a suggested optimization
@@ -249,6 +250,18 @@ func (s *Server) getAutoPRSettings(c *gin.Context) {
 
 	json.Unmarshal(excludeReposJSON, &settings.ExcludeRepositories)
 	json.Unmarshal(excludePatternsJSON, &settings.ExcludeJobPatterns)
+
+	// Never send the raw token to the client — mask it.
+	rawToken := settings.GitHubToken
+	settings.GitHubToken = ""
+	if rawToken != "" {
+		settings.GitHubTokenSet = true
+		if len(rawToken) >= 4 {
+			settings.GitHubTokenHint = "\u2026" + rawToken[len(rawToken)-4:]
+		} else {
+			settings.GitHubTokenHint = "\u2026"
+		}
+	}
 
 	c.JSON(http.StatusOK, settings)
 }

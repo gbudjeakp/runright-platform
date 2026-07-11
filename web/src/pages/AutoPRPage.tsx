@@ -880,9 +880,33 @@ function MappingsTab({ mappings, gpuTiers, catalog, repos, onRefresh }: {
                           : <span className="text-[var(--text-light)]">—</span>}
                       </td>
                       <td>
-                        <div className="flex gap-2">
-                          <button onClick={() => handleEdit(m)} className="link-btn text-xs">Edit</button>
-                          <button onClick={() => handleDelete(m.id)} className="link-btn text-xs !text-[var(--red)]">Delete</button>
+                        <div className="flex gap-1">
+                          {/* Pencil / edit */}
+                          <button
+                            onClick={() => handleEdit(m)}
+                            className="p-1.5 rounded hover:bg-[var(--paper)] text-[var(--text-mid)] hover:text-[var(--text)] transition-colors"
+                            title="Edit"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                            </svg>
+                          </button>
+                          {/* Trash / delete */}
+                          <button
+                            onClick={() => handleDelete(m.id)}
+                            className="p-1.5 rounded hover:bg-[var(--paper)] text-[var(--text-mid)] hover:text-[var(--red)] transition-colors"
+                            title="Delete"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6"/>
+                              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                              <path d="M10 11v6M14 11v6"/>
+                              <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                            </svg>
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -905,11 +929,19 @@ function SettingsTab({ settings, onSave }: {
   const [form, setForm] = useState(settings)
   const [saving, setSaving] = useState(false)
   const [scanning, setScanning] = useState(false)
+  // newToken is typed by the user when they want to replace/set the PAT.
+  // We keep it separate so we don't accidentally overwrite a saved token
+  // with an empty string on every save.
+  const [newToken, setNewToken] = useState('')
   const [tokenVisible, setTokenVisible] = useState(false)
 
   const handleSave = async () => {
     setSaving(true)
-    await onSave(form)
+    const payload = { ...form }
+    if (newToken) payload.github_token = newToken
+    else delete payload.github_token // don't send blank — preserve existing
+    await onSave(payload)
+    setNewToken('')
     setSaving(false)
   }
 
@@ -921,26 +953,59 @@ function SettingsTab({ settings, onSave }: {
         <p className="text-[var(--text-light)] text-sm mb-4">
           A Personal Access Token with <code className="text-xs bg-[var(--paper)] px-1 rounded">contents</code> and{' '}
           <code className="text-xs bg-[var(--paper)] px-1 rounded">pull_requests</code> scopes.
-          Required to open PRs. Leave blank to use the server&rsquo;s{' '}
+          Required to open PRs. Leave blank to use the server&apos;s{' '}
           <code className="text-xs bg-[var(--paper)] px-1 rounded">GITHUB_TOKEN</code> env var.
         </p>
-        <div className="flex gap-2">
-          <input
-            type={tokenVisible ? 'text' : 'password'}
-            className="rr-input flex-1 font-mono text-sm"
-            placeholder="ghp_…  (stored encrypted-at-rest in the database)"
-            value={form.github_token ?? ''}
-            onChange={(e) => setForm({ ...form, github_token: e.target.value })}
-            autoComplete="off"
-          />
-          <button
-            type="button"
-            className="btn-rr-outline px-3"
-            onClick={() => setTokenVisible((v) => !v)}
-          >
-            {tokenVisible ? 'Hide' : 'Show'}
-          </button>
-        </div>
+
+        {/* Status pill — shown when a token is already stored */}
+        {settings.github_token_set && !newToken && (
+          <div className="flex items-center gap-3 mb-3 px-3 py-2 rounded bg-[var(--paper)] border border-[color:var(--border)]">
+            {/* Lock icon */}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              className="text-green-500 shrink-0">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            <span className="text-sm text-[var(--text)]">
+              Token stored&ensp;<span className="font-mono text-xs text-[var(--text-light)]">{settings.github_token_hint}</span>
+            </span>
+            <button
+              type="button"
+              className="ml-auto text-xs text-[var(--red)] hover:underline"
+              onClick={() => setNewToken(' ')} // trigger input reveal
+            >
+              Replace
+            </button>
+          </div>
+        )}
+
+        {/* Input — shown when no token or user clicked Replace */}
+        {(!settings.github_token_set || newToken) && (
+          <div className="flex gap-2">
+            <input
+              type={tokenVisible ? 'text' : 'password'}
+              className="rr-input flex-1 font-mono text-sm"
+              placeholder="ghp_…"
+              value={newToken.trim() === '' ? '' : newToken}
+              onChange={(e) => setNewToken(e.target.value)}
+              autoComplete="off"
+              // eslint-disable-next-line jsx-a11y/no-autofocus
+              autoFocus={!!settings.github_token_set}
+            />
+            <button
+              type="button"
+              className="btn-rr-outline px-3"
+              onClick={() => setTokenVisible((v) => !v)}
+            >
+              {tokenVisible ? 'Hide' : 'Show'}
+            </button>
+            {settings.github_token_set && (
+              <button type="button" className="btn-rr-outline px-3"
+                onClick={() => setNewToken('')}>Cancel</button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Auto-PR Generation ────────────────────────────────────── */}

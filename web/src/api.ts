@@ -252,7 +252,10 @@ export interface AutoPRSettings {
   gpu_min_savings_percent: number
   exclude_repositories: string[]
   exclude_job_patterns: string[]
+  /** Write-only on PUT — never returned by GET. Use github_token_set / hint. */
   github_token?: string
+  github_token_set?: boolean
+  github_token_hint?: string // e.g. "…a1b2"
 }
 
 export interface PRRecommendation {
