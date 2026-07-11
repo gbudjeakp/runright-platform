@@ -40,6 +40,14 @@ func main() {
 		}
 	}
 	fmt.Printf("\nSeeded %d jobs (%d failed)\n", ok, fail)
+
+	// Seed a pending Auto-PR recommendation for gbudjeakp/DevOps-learn so the
+	// Approve & Create PR flow can be tested immediately after seeding.
+	if err := postRecommendation(*url, *key); err != nil {
+		log.Printf("WARN recommendation seed: %v", err)
+	} else {
+		fmt.Println("  OK  devops-learn recommendation (pending, ubuntu-22.04 → ubuntu-latest)")
+	}
 }
 
 // --------------------------------------------------------------------------
@@ -67,6 +75,48 @@ func post(base, key string, p payload) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// postRecommendation seeds a pending Auto-PR recommendation for
+// gbudjeakp/DevOps-learn so the Approve & Create PR flow can be demoed
+// immediately without waiting for the background worker.
+func postRecommendation(base, key string) error {
+	body := map[string]any{
+		"repository":                "gbudjeakp/DevOps-learn",
+		"job_id":                    "devops-learn-github-hosted-build",
+		"workflow_file":             ".github/workflows/ci-hosted.yml",
+		"current_label":             "ubuntu-22.04",
+		"current_vcpus":             2,
+		"current_memory_gib":        7.0,
+		"current_cost_per_hour":     0.008,
+		"recommended_label":         "ubuntu-latest",
+		"recommended_vcpus":         2,
+		"recommended_memory_gib":    7.0,
+		"recommended_cost_per_hour": 0.006,
+		"p95_cpu_percent":           8.5,
+		"p95_mem_percent":           1.2,
+		"savings_percent":           25.0,
+		"monthly_savings_usd":       4.32,
+	}
+	b, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPost, base+"/api/v1/auto-pr/recommendations", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	// 409 means the recommendation already exists — that is fine.
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusConflict {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return nil

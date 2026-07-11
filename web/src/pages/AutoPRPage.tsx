@@ -3,6 +3,7 @@ import {
   fetchLabelMappings, fetchAutoPRSettings, fetchPRRecommendations, fetchPRHistory,
   fetchGPUTiers, upsertLabelMapping, deleteLabelMapping, upsertAutoPRSettings,
   approvePRRecommendation, dismissPRRecommendation, fetchCatalog, fetchRepos,
+  triggerAutoPRScan,
   type LabelMapping, type AutoPRSettings, type PRRecommendation, type GPUTier, type PRHistory
 } from '../api'
 import { useAutoPRWebSocket } from '../hooks/useWebSocket'
@@ -903,6 +904,7 @@ function SettingsTab({ settings, onSave }: {
 }) {
   const [form, setForm] = useState(settings)
   const [saving, setSaving] = useState(false)
+  const [scanning, setScanning] = useState(false)
   const [tokenVisible, setTokenVisible] = useState(false)
 
   const handleSave = async () => {
@@ -935,9 +937,8 @@ function SettingsTab({ settings, onSave }: {
             type="button"
             className="btn-rr-outline px-3"
             onClick={() => setTokenVisible((v) => !v)}
-            title={tokenVisible ? 'Hide' : 'Show'}
           >
-            {tokenVisible ? '🙈' : '👁'}
+            {tokenVisible ? 'Hide' : 'Show'}
           </button>
         </div>
       </div>
@@ -1022,9 +1023,23 @@ function SettingsTab({ settings, onSave }: {
         </div>
       </div>
 
-      <button className="btn-rr" onClick={handleSave} disabled={saving}>
-        {saving ? 'Saving…' : 'Save Settings'}
-      </button>
+      <div className="flex gap-3 flex-wrap">
+        <button className="btn-rr" onClick={handleSave} disabled={saving}>
+          {saving ? 'Saving…' : 'Save Settings'}
+        </button>
+        <button
+          className="btn-rr-outline"
+          disabled={scanning}
+          onClick={async () => {
+            setScanning(true)
+            try { await triggerAutoPRScan() } catch { /* best-effort */ }
+            setTimeout(() => setScanning(false), 3000)
+          }}
+          title="Re-scan all job history (up to 30 days) and surface new recommendations"
+        >
+          {scanning ? 'Scanning…' : 'Scan Now'}
+        </button>
+      </div>
     </div>
   )
 }

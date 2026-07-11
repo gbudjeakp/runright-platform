@@ -772,11 +772,12 @@ func (s *Server) getGitHubClient(ctx context.Context) (*ghlib.Client, error) {
 // BACKGROUND AUTO-PR WORKER
 // ══════════════════════════════════════════════════════════════════════════════
 
-// autoPRWorkerInterval is how often the worker scans for underutilised jobs.
-// Keeping it coarse means the cost is O(distinct job+repo pairs active in the
-// window) rather than O(total job insertions), so it stays cheap even at tens
-// of thousands of runs per day.
+// autoPRWorkerInterval is how often the worker scans for recently-completed jobs.
 const autoPRWorkerInterval = 15 * time.Minute
+
+// autoPRLookbackDefault is how far back each batch scan looks.  30 days covers
+// seed data and deployments where the server was offline for a while.
+const autoPRLookbackDefault = 30 * 24 * time.Hour
 
 // startAutoPRWorker runs until ctx is cancelled.  It should be launched as a
 // goroutine from Server.Run so it shares the server lifetime.
@@ -788,22 +789,16 @@ func (s *Server) startAutoPRWorker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.runAutoPRBatch(ctx)
+			s.runAutoPRBatch(ctx, autoPRLookbackDefault)
 		}
 	}
 }
 
 // runAutoPRBatch finds every distinct (job_id, repository) pair that received
-// at least one completed run in the last tick window plus a small overlap, then
-// calls checkAutoPRCandidate for each pair.
-//
-// At 40 k jobs/day with 200 unique pairs this produces ~200 lightweight DB
-// round-trips per tick rather than 40 k goroutines.
-func (s *Server) runAutoPRBatch(ctx context.Context) {
-	// Slightly wider than the ticker interval to tolerate clock skew /
-	// slow inserts right at the boundary.
-	lookback := autoPRWorkerInterval + time.Minute
-
+// at least one completed run in the given lookback window, then calls
+// checkAutoPRCandidate for each pair.  The default lookback (30 days) covers
+// seed data; pass a shorter duration for tighter rolling scans.
+func (s *Server) runAutoPRBatch(ctx context.Context, lookback time.Duration) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT DISTINCT job_id, COALESCE(repository, '')
 		FROM jobs
@@ -827,6 +822,14 @@ func (s *Server) runAutoPRBatch(ctx context.Context) {
 	for _, p := range pairs {
 		s.checkAutoPRCandidate(p.jobID, p.repo)
 	}
+}
+
+// triggerAutoPRScan runs an immediate full-history scan (up to 30 days).
+// Exposed via POST /api/v1/auto-pr/scan so the UI can trigger it on demand.
+func (s *Server) triggerAutoPRScan(c *gin.Context) {
+	ctx := c.Request.Context()
+	go s.runAutoPRBatch(ctx, autoPRLookbackDefault)
+	c.JSON(http.StatusAccepted, gin.H{"status": "scan started"})
 }
 
 // checkAutoPRCandidate is called after each completed job insertion.

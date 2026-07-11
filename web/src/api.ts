@@ -337,6 +337,9 @@ export const fetchAutoPRSettings = (): Promise<AutoPRSettings> =>
 export const upsertAutoPRSettings = (settings: Partial<AutoPRSettings>): Promise<void> =>
   api.put('/auto-pr/settings', settings).then(() => undefined)
 
+export const triggerAutoPRScan = (): Promise<void> =>
+  api.post('/auto-pr/scan').then(() => undefined)
+
 // PR Recommendations
 export const fetchPRRecommendations = (status = 'pending', gpuOnly = false): Promise<PRRecommendation[]> =>
   api.get<PRRecommendation[]>('/auto-pr/recommendations', { 
