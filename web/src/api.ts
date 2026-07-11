@@ -246,12 +246,13 @@ export interface AutoPRSettings {
   team_id?: string
   enabled: boolean
   min_savings_percent: number
-  min_monthly_savings: number
   require_consecutive_runs: number
-  gpu_prs_enabled: boolean
-  gpu_min_savings_percent: number
-  exclude_repositories: string[]
-  exclude_job_patterns: string[]
+  // Stored in DB but not yet surfaced in the UI (kept for future use):
+  min_monthly_savings?: number
+  gpu_prs_enabled?: boolean
+  gpu_min_savings_percent?: number
+  exclude_repositories?: string[]
+  exclude_job_patterns?: string[]
   /** Write-only on PUT — never returned by GET. Use github_token_set / hint. */
   github_token?: string
   github_token_set?: boolean

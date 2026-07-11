@@ -1027,7 +1027,7 @@ function SettingsTab({ settings, onSave }: {
 
       <div className="rr-card mb-5">
         <h3 className="font-serif text-lg text-[var(--text)] mb-4">Thresholds</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block font-deco text-[11px] tracking-[1px] uppercase text-[var(--text-mid)] mb-1">
               Min Savings %
@@ -1041,17 +1041,6 @@ function SettingsTab({ settings, onSave }: {
           </div>
           <div>
             <label className="block font-deco text-[11px] tracking-[1px] uppercase text-[var(--text-mid)] mb-1">
-              Min Monthly Savings ($)
-            </label>
-            <input
-              type="number"
-              className="rr-input"
-              value={form.min_monthly_savings}
-              onChange={(e) => setForm({ ...form, min_monthly_savings: parseFloat(e.target.value) })}
-            />
-          </div>
-          <div>
-            <label className="block font-deco text-[11px] tracking-[1px] uppercase text-[var(--text-mid)] mb-1">
               Consecutive Runs
             </label>
             <input
@@ -1061,30 +1050,6 @@ function SettingsTab({ settings, onSave }: {
               onChange={(e) => setForm({ ...form, require_consecutive_runs: parseInt(e.target.value) })}
             />
           </div>
-        </div>
-      </div>
-
-      <div className="rr-card mb-5">
-        <h3 className="font-serif text-lg text-[var(--text)] mb-4">GPU Settings</h3>
-        <label className="flex items-center gap-3 cursor-pointer mb-3">
-          <input
-            type="checkbox"
-            checked={form.gpu_prs_enabled}
-            onChange={(e) => setForm({ ...form, gpu_prs_enabled: e.target.checked })}
-            className="w-5 h-5 accent-[var(--gold)]"
-          />
-          <span className="text-[var(--text)]">Enable GPU job optimization PRs</span>
-        </label>
-        <div className="mt-3">
-          <label className="block font-deco text-[11px] tracking-[1px] uppercase text-[var(--text-mid)] mb-1">
-            GPU Min Savings %
-          </label>
-          <input
-            type="number"
-            className="rr-input max-w-[200px]"
-            value={form.gpu_min_savings_percent}
-            onChange={(e) => setForm({ ...form, gpu_min_savings_percent: parseFloat(e.target.value) })}
-          />
         </div>
       </div>
 

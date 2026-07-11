@@ -2,9 +2,18 @@ package server
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -277,6 +286,17 @@ func (s *Server) upsertAutoPRSettings(c *gin.Context) {
 	excludeReposJSON, _ := json.Marshal(settings.ExcludeRepositories)
 	excludePatternsJSON, _ := json.Marshal(settings.ExcludeJobPatterns)
 
+	// Encrypt the token before persisting (no-op if RUNRIGHT_ENCRYPTION_KEY is unset).
+	tokenToStore := settings.GitHubToken
+	var encErr error
+	if tokenToStore != "" {
+		tokenToStore, encErr = encryptPAT(tokenToStore)
+		if encErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt token: " + encErr.Error()})
+			return
+		}
+	}
+
 	// First ensure we have a default team if none exists
 	_, _ = s.db.ExecContext(ctx, `
 		INSERT INTO teams (id, name, slug, created_at, updated_at)
@@ -312,7 +332,7 @@ func (s *Server) upsertAutoPRSettings(c *gin.Context) {
 			updated_at = NOW()
 	`, settings.Enabled, settings.MinSavingsPercent, settings.MinMonthlySavings,
 		settings.RequireConsecutive, settings.GPUPRsEnabled, settings.GPUMinSavingsPercent,
-		excludeReposJSON, excludePatternsJSON, settings.GitHubToken)
+		excludeReposJSON, excludePatternsJSON, tokenToStore)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -767,16 +787,93 @@ func (s *Server) listPRHistory(c *gin.Context) {
 }
 
 // getGitHubClient returns a GitHub API client if GITHUB_TOKEN is set
+// ══════════════════════════════════════════════════════════════════════════════
+// PAT ENCRYPTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+// tokenEncryptionKey returns the 32-byte AES key derived from the
+// RUNRIGHT_ENCRYPTION_KEY environment variable, or nil if not set.
+// Use a key of at least 16 random characters in production.
+func tokenEncryptionKey() []byte {
+	raw := os.Getenv("RUNRIGHT_ENCRYPTION_KEY")
+	if raw == "" {
+		return nil
+	}
+	h := sha256.Sum256([]byte(raw))
+	return h[:]
+}
+
+// encryptPAT encrypts plaintext with AES-256-GCM when RUNRIGHT_ENCRYPTION_KEY
+// is set; otherwise returns plaintext unchanged.
+// Encrypted values are prefixed with "enc:v1:" for future-proof detection.
+func encryptPAT(plaintext string) (string, error) {
+	key := tokenEncryptionKey()
+	if key == nil || plaintext == "" {
+		return plaintext, nil
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("encryptPAT: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("encryptPAT: %w", err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", fmt.Errorf("encryptPAT: %w", err)
+	}
+	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	return "enc:v1:" + hex.EncodeToString(ciphertext), nil
+}
+
+// decryptPAT reverses encryptPAT.  Values that were stored without encryption
+// (no "enc:v1:" prefix) are returned as-is so old rows still work.
+func decryptPAT(stored string) (string, error) {
+	if !strings.HasPrefix(stored, "enc:v1:") {
+		return stored, nil // plaintext — backwards compatible
+	}
+	key := tokenEncryptionKey()
+	if key == nil {
+		return "", fmt.Errorf("token is encrypted but RUNRIGHT_ENCRYPTION_KEY is not set")
+	}
+	raw, err := hex.DecodeString(strings.TrimPrefix(stored, "enc:v1:"))
+	if err != nil {
+		return "", fmt.Errorf("decryptPAT: invalid hex: %w", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("decryptPAT: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("decryptPAT: %w", err)
+	}
+	ns := gcm.NonceSize()
+	if len(raw) < ns {
+		return "", fmt.Errorf("decryptPAT: ciphertext too short")
+	}
+	plaintext, err := gcm.Open(nil, raw[:ns], raw[ns:], nil)
+	if err != nil {
+		return "", fmt.Errorf("decryptPAT: authentication failed (wrong key?): %w", err)
+	}
+	return string(plaintext), nil
+}
+
 // getGitHubClient returns a GitHub API client.  It first checks the
 // auto_pr_settings table for a stored token (takes precedence), then falls
 // back to the GITHUB_TOKEN environment variable.
 func (s *Server) getGitHubClient(ctx context.Context) (*ghlib.Client, error) {
-	var dbToken string
+	var stored string
 	_ = s.db.QueryRowContext(ctx,
 		`SELECT COALESCE(github_token, '') FROM auto_pr_settings LIMIT 1`,
-	).Scan(&dbToken)
-	if dbToken != "" {
-		return ghlib.NewWithToken(dbToken), nil
+	).Scan(&stored)
+	if stored != "" {
+		plaintext, err := decryptPAT(stored)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt stored GitHub token: %w", err)
+		}
+		return ghlib.NewWithToken(plaintext), nil
 	}
 	return ghlib.New() // falls back to GITHUB_TOKEN env var
 }
@@ -854,11 +951,15 @@ func (s *Server) checkAutoPRCandidate(jobID, repository string) {
 	defer cancel()
 
 	// ── Load settings (fall back to defaults if not configured) ──────────────
+	var enabled = true
 	var minSavingsPct float64 = 20
 	var requireConsec = 5
 	_ = s.db.QueryRowContext(ctx,
-		`SELECT min_savings_percent, require_consecutive_runs FROM auto_pr_settings LIMIT 1`,
-	).Scan(&minSavingsPct, &requireConsec)
+		`SELECT COALESCE(enabled, true), min_savings_percent, require_consecutive_runs FROM auto_pr_settings LIMIT 1`,
+	).Scan(&enabled, &minSavingsPct, &requireConsec)
+	if !enabled {
+		return // auto-PR generation is turned off
+	}
 
 	// ── Query the last N completed runs ───────────────────────────────────────
 	type runRow struct {
