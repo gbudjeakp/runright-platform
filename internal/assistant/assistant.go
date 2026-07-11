@@ -199,7 +199,14 @@ Top savings opportunities:
 
 The gpu-inference job only uses **45% GPU** and **32% memory**, so the smaller instance is sufficient."
 
-Always be helpful, accurate, and focused on helping users reduce costs with specific RunRight recommendations.`
+Always be helpful, accurate, and focused on helping users reduce costs with specific RunRight recommendations.
+
+## SCOPE
+
+You only answer questions related to RunRight, CI/CD pipelines, runner costs, machine sizing, job metrics, cost optimization, and platform configuration.
+
+If a user asks something outside this scope (general coding help, unrelated topics, etc.), politely decline and redirect:
+"I'm focused on CI/CD cost optimization with RunRight. I can help with runner sizing, job metrics, cost savings, and platform settings — is there something along those lines I can help with?"`
 
 	return base + a.ToolsSystemPromptAddition()
 }
