@@ -3,6 +3,7 @@ import {
   fetchLabelMappings, fetchAutoPRSettings, fetchPRRecommendations, fetchPRHistory,
   fetchGPUTiers, upsertLabelMapping, deleteLabelMapping, upsertAutoPRSettings,
   approvePRRecommendation, dismissPRRecommendation, fetchCatalog, fetchRepos,
+  triggerAutoPRScan,
   type LabelMapping, type AutoPRSettings, type PRRecommendation, type GPUTier, type PRHistory
 } from '../api'
 import { useAutoPRWebSocket } from '../hooks/useWebSocket'
@@ -26,6 +27,8 @@ export default function AutoPRPage() {
   const [statusFilter, setStatusFilter] = useState('pending')
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
+  const [approveErrors, setApproveErrors] = useState<Record<string, string>>({})
+  const [approving, setApproving] = useState<Record<string, boolean>>({})
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -69,16 +72,26 @@ export default function AutoPRPage() {
   }, [note])
 
   const handleApprove = async (id: string) => {
+    // Clear any previous error for this card and mark as in-progress
+    setApproveErrors((prev) => { const n = {...prev}; delete n[id]; return n })
+    setApproving((prev) => ({ ...prev, [id]: true }))
     try {
       const result = await approvePRRecommendation(id)
       if (result.pr_url) {
-        setNote(`PR created! View it at: ${result.pr_url}`)
+        setNote(`PR created: ${result.pr_url}`)
       } else {
-        setNote('Recommendation approved (PR creation pending)')
+        // Shouldn't happen — means backend approved but no pr_url was returned
+        setApproveErrors((prev) => ({ ...prev, [id]: 'PR approved but no URL returned — check server logs for GitHub API errors.' }))
       }
       loadData()
-    } catch {
-      setError('Failed to approve')
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+        ?? 'Failed to approve — check that the server is reachable'
+      setApproveErrors((prev) => ({ ...prev, [id]: msg }))
+      loadData()
+    } finally {
+      setApproving((prev) => { const n = {...prev}; delete n[id]; return n })
     }
   }
 
@@ -182,6 +195,8 @@ export default function AutoPRPage() {
           {activeTab === 'recommendations' && (
             <RecommendationsTab
               recommendations={recommendations}
+              approveErrors={approveErrors}
+              approving={approving}
               onApprove={handleApprove}
               onDismiss={handleDismiss}
             />
@@ -210,8 +225,10 @@ export default function AutoPRPage() {
   )
 }
 
-function RecommendationsTab({ recommendations, onApprove, onDismiss }: {
+function RecommendationsTab({ recommendations, approveErrors, approving, onApprove, onDismiss }: {
   recommendations: PRRecommendation[]
+  approveErrors: Record<string, string>
+  approving: Record<string, boolean>
   onApprove: (id: string) => void
   onDismiss: (id: string) => void
 }) {
@@ -301,7 +318,9 @@ function RecommendationsTab({ recommendations, onApprove, onDismiss }: {
 
             {rec.status === 'pending' && (
               <div className="flex gap-3 mt-4 pt-4 border-t border-[var(--border)]">
-                <button className="btn-rr" onClick={() => onApprove(rec.id)}>Approve & Create PR</button>
+                <button className="btn-rr" disabled={approving[rec.id]} onClick={() => onApprove(rec.id)}>
+                  {approving[rec.id] ? 'Creating PR…' : 'Approve & Create PR'}
+                </button>
                 <button 
                   className="px-4 py-2 border border-[var(--border)] text-[var(--text-mid)] font-deco text-[13px] tracking-[1px] hover:border-[var(--border-dark)] hover:text-[var(--text)] transition-colors cursor-pointer bg-transparent"
                   onClick={() => onDismiss(rec.id)}
@@ -313,7 +332,7 @@ function RecommendationsTab({ recommendations, onApprove, onDismiss }: {
 
             {rec.status === 'approved' && (
               <div className="flex items-center gap-3 mt-4 pt-4 border-t border-[var(--border)]">
-                <span className="badge badge-gcp">✓ Approved</span>
+                <span className="badge badge-github">✓ Approved</span>
                 {rec.pr_url ? (
                   <a 
                     href={rec.pr_url} 
@@ -327,7 +346,21 @@ function RecommendationsTab({ recommendations, onApprove, onDismiss }: {
                     PR #{rec.pr_number || 'View'}
                   </a>
                 ) : (
-                  <span className="text-[var(--text-light)] text-sm italic">PR creation pending...</span>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[var(--text-light)] text-sm italic">PR creation pending</span>
+                      <button
+                        className="text-xs text-[var(--red)] hover:underline font-deco tracking-wide disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={approving[rec.id]}
+                        onClick={() => onApprove(rec.id)}
+                      >
+                        {approving[rec.id] ? 'Creating PR…' : 'Retry'}
+                      </button>
+                    </div>
+                    {approveErrors[rec.id] && (
+                      <p className="text-xs text-[var(--red)] max-w-sm leading-snug">{approveErrors[rec.id]}</p>
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -876,9 +909,33 @@ function MappingsTab({ mappings, gpuTiers, catalog, repos, onRefresh }: {
                           : <span className="text-[var(--text-light)]">—</span>}
                       </td>
                       <td>
-                        <div className="flex gap-2">
-                          <button onClick={() => handleEdit(m)} className="link-btn text-xs">Edit</button>
-                          <button onClick={() => handleDelete(m.id)} className="link-btn text-xs !text-[var(--red)]">Delete</button>
+                        <div className="flex gap-1">
+                          {/* Pencil / edit */}
+                          <button
+                            onClick={() => handleEdit(m)}
+                            className="p-1.5 rounded hover:bg-[var(--paper)] text-[var(--text-mid)] hover:text-[var(--text)] transition-colors"
+                            title="Edit"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                            </svg>
+                          </button>
+                          {/* Trash / delete */}
+                          <button
+                            onClick={() => handleDelete(m.id)}
+                            className="p-1.5 rounded hover:bg-[var(--paper)] text-[var(--text-mid)] hover:text-[var(--red)] transition-colors"
+                            title="Delete"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6"/>
+                              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                              <path d="M10 11v6M14 11v6"/>
+                              <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                            </svg>
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -900,15 +957,87 @@ function SettingsTab({ settings, onSave }: {
 }) {
   const [form, setForm] = useState(settings)
   const [saving, setSaving] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  // newToken is typed by the user when they want to replace/set the PAT.
+  // We keep it separate so we don't accidentally overwrite a saved token
+  // with an empty string on every save.
+  const [newToken, setNewToken] = useState('')
+  const [tokenVisible, setTokenVisible] = useState(false)
 
   const handleSave = async () => {
     setSaving(true)
-    await onSave(form)
+    const payload = { ...form }
+    if (newToken) payload.github_token = newToken
+    else delete payload.github_token // don't send blank — preserve existing
+    await onSave(payload)
+    setNewToken('')
     setSaving(false)
   }
 
   return (
     <div className="max-w-2xl">
+      {/* ── GitHub Token ─────────────────────────────────────────── */}
+      <div className="rr-card mb-5">
+        <h3 className="font-serif text-lg text-[var(--text)] mb-1">GitHub Token</h3>
+        <p className="text-[var(--text-light)] text-sm mb-4">
+          A Personal Access Token with <code className="text-xs bg-[var(--paper)] px-1 rounded">contents</code> and{' '}
+          <code className="text-xs bg-[var(--paper)] px-1 rounded">pull_requests</code> scopes.
+          Required to open PRs. Leave blank to use the server&apos;s{' '}
+          <code className="text-xs bg-[var(--paper)] px-1 rounded">GITHUB_TOKEN</code> env var.
+        </p>
+
+        {/* Status pill — shown when a token is already stored */}
+        {settings.github_token_set && !newToken && (
+          <div className="flex items-center gap-3 mb-3 px-3 py-2 rounded bg-[var(--paper)] border border-[color:var(--border)]">
+            {/* Lock icon */}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              className="text-green-500 shrink-0">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            <span className="text-sm text-[var(--text)]">
+              Token stored&ensp;<span className="font-mono text-xs text-[var(--text-light)]">{settings.github_token_hint}</span>
+            </span>
+            <button
+              type="button"
+              className="ml-auto text-xs text-[var(--red)] hover:underline"
+              onClick={() => setNewToken(' ')} // trigger input reveal
+            >
+              Replace
+            </button>
+          </div>
+        )}
+
+        {/* Input — shown when no token or user clicked Replace */}
+        {(!settings.github_token_set || newToken) && (
+          <div className="flex gap-2">
+            <input
+              type={tokenVisible ? 'text' : 'password'}
+              className="rr-input flex-1 font-mono text-sm"
+              placeholder="ghp_…"
+              value={newToken.trim() === '' ? '' : newToken}
+              onChange={(e) => setNewToken(e.target.value)}
+              autoComplete="off"
+              // eslint-disable-next-line jsx-a11y/no-autofocus
+              autoFocus={!!settings.github_token_set}
+            />
+            <button
+              type="button"
+              className="btn-rr-outline px-3"
+              onClick={() => setTokenVisible((v) => !v)}
+            >
+              {tokenVisible ? 'Hide' : 'Show'}
+            </button>
+            {settings.github_token_set && (
+              <button type="button" className="btn-rr-outline px-3"
+                onClick={() => setNewToken('')}>Cancel</button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Auto-PR Generation ────────────────────────────────────── */}
       <div className="rr-card mb-5">
         <h3 className="font-serif text-lg text-[var(--text)] mb-4">Auto-PR Generation</h3>
         <label className="flex items-center gap-3 cursor-pointer mb-3">
@@ -927,7 +1056,7 @@ function SettingsTab({ settings, onSave }: {
 
       <div className="rr-card mb-5">
         <h3 className="font-serif text-lg text-[var(--text)] mb-4">Thresholds</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block font-deco text-[11px] tracking-[1px] uppercase text-[var(--text-mid)] mb-1">
               Min Savings %
@@ -941,17 +1070,6 @@ function SettingsTab({ settings, onSave }: {
           </div>
           <div>
             <label className="block font-deco text-[11px] tracking-[1px] uppercase text-[var(--text-mid)] mb-1">
-              Min Monthly Savings ($)
-            </label>
-            <input
-              type="number"
-              className="rr-input"
-              value={form.min_monthly_savings}
-              onChange={(e) => setForm({ ...form, min_monthly_savings: parseFloat(e.target.value) })}
-            />
-          </div>
-          <div>
-            <label className="block font-deco text-[11px] tracking-[1px] uppercase text-[var(--text-mid)] mb-1">
               Consecutive Runs
             </label>
             <input
@@ -961,36 +1079,56 @@ function SettingsTab({ settings, onSave }: {
               onChange={(e) => setForm({ ...form, require_consecutive_runs: parseInt(e.target.value) })}
             />
           </div>
+          <div>
+            <label className="block font-deco text-[11px] tracking-[1px] uppercase text-[var(--text-mid)] mb-1">
+              Min Data Span (days)
+            </label>
+            <input
+              type="number"
+              min={0}
+              className="rr-input"
+              value={form.min_data_days}
+              onChange={(e) => setForm({ ...form, min_data_days: parseInt(e.target.value) })}
+            />
+            <p className="text-[var(--text-light)] text-xs mt-1">
+              Qualifying runs must span at least this many calendar days. Prevents incident-day spikes from triggering false recommendations. 0 = disabled.
+            </p>
+          </div>
+          <div>
+            <label className="block font-deco text-[11px] tracking-[1px] uppercase text-[var(--text-mid)] mb-1">
+              Max Recs Per Scan
+            </label>
+            <input
+              type="number"
+              min={1}
+              className="rr-input"
+              value={form.max_recs_per_scan}
+              onChange={(e) => setForm({ ...form, max_recs_per_scan: parseInt(e.target.value) })}
+            />
+            <p className="text-[var(--text-light)] text-xs mt-1">
+              Hard cap on new recommendations created per background scan cycle.
+            </p>
+          </div>
         </div>
       </div>
 
-      <div className="rr-card mb-5">
-        <h3 className="font-serif text-lg text-[var(--text)] mb-4">GPU Settings</h3>
-        <label className="flex items-center gap-3 cursor-pointer mb-3">
-          <input
-            type="checkbox"
-            checked={form.gpu_prs_enabled}
-            onChange={(e) => setForm({ ...form, gpu_prs_enabled: e.target.checked })}
-            className="w-5 h-5 accent-[var(--gold)]"
-          />
-          <span className="text-[var(--text)]">Enable GPU job optimization PRs</span>
-        </label>
-        <div className="mt-3">
-          <label className="block font-deco text-[11px] tracking-[1px] uppercase text-[var(--text-mid)] mb-1">
-            GPU Min Savings %
-          </label>
-          <input
-            type="number"
-            className="rr-input max-w-[200px]"
-            value={form.gpu_min_savings_percent}
-            onChange={(e) => setForm({ ...form, gpu_min_savings_percent: parseFloat(e.target.value) })}
-          />
-        </div>
+      <div className="flex gap-3 flex-wrap">
+        <button className="btn-rr" onClick={handleSave} disabled={saving}>
+          {saving ? 'Saving…' : 'Save Settings'}
+        </button>
+        <button
+          className="btn-rr-outline"
+          disabled={scanning}
+          onClick={async () => {
+            setScanning(true)
+            try { await triggerAutoPRScan() } catch { /* best-effort */ }
+            setTimeout(() => setScanning(false), 3000)
+          }}
+          title="Re-scan all job history (up to 30 days) and surface new recommendations"
+        >
+          {scanning ? 'Scanning…' : 'Scan Now'}
+        </button>
       </div>
-
-      <button className="btn-rr" onClick={handleSave} disabled={saving}>
-        {saving ? 'Saving…' : 'Save Settings'}
-      </button>
     </div>
   )
 }

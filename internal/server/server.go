@@ -230,6 +230,7 @@ func New(cfg Config) (*Server, error) {
 		v1.POST("/auto-pr/recommendations/:id/dismiss", s.requirePermission(PermPoliciesManage), s.dismissPRRecommendation)
 
 		v1.GET("/auto-pr/history", s.listPRHistory)
+		v1.POST("/auto-pr/scan", s.requirePermission(PermPoliciesManage), s.triggerAutoPRScan)
 
 		// GPU Analysis
 		v1.GET("/gpu/tiers", s.listGPUTiers)
@@ -270,6 +271,10 @@ func New(cfg Config) (*Server, error) {
 
 // Run starts the HTTP server on the configured port.
 func (s *Server) Run(port int) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.startAutoPRWorker(ctx)
+
 	addr := fmt.Sprintf(":%d", port)
 	srv := &http.Server{
 		Addr:              addr,

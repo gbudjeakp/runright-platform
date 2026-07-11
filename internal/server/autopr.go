@@ -1,15 +1,25 @@
 package server
 
 import (
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	ghlib "github.com/sgbudje/runright-platform/internal/github"
+	"github.com/sgbudje/runright-platform/internal/types"
 )
 
 // LabelMapping maps a runner label to instance specs
@@ -42,6 +52,16 @@ type AutoPRSettings struct {
 	GPUMinSavingsPercent float64  `json:"gpu_min_savings_percent"`
 	ExcludeRepositories  []string `json:"exclude_repositories"`
 	ExcludeJobPatterns   []string `json:"exclude_job_patterns"`
+	// MinDataDays: oldest of the N qualifying runs must be at least this many
+	// days old. Prevents an incident-day burst from generating fake recs.
+	// 0 = disabled.
+	MinDataDays    int `json:"min_data_days"`
+	MaxRecsPerScan int `json:"max_recs_per_scan"`
+	// GitHubToken is write-only: accepted on PUT, NEVER returned on GET.
+	// Use GitHubTokenSet + GitHubTokenHint to show status in the UI.
+	GitHubToken     string `json:"github_token,omitempty"`
+	GitHubTokenSet  bool   `json:"github_token_set"`
+	GitHubTokenHint string `json:"github_token_hint,omitempty"` // last 4 chars, e.g. "…a1b2"
 }
 
 // PRRecommendation represents a suggested optimization
@@ -211,14 +231,17 @@ func (s *Server) getAutoPRSettings(c *gin.Context) {
 	err := s.db.QueryRowContext(ctx, `
 		SELECT team_id, enabled, min_savings_percent, min_monthly_savings,
 		       require_consecutive_runs, gpu_prs_enabled, gpu_min_savings_percent,
-		       COALESCE(exclude_repositories, '[]'), COALESCE(exclude_job_patterns, '[]')
+		       COALESCE(exclude_repositories, '[]'), COALESCE(exclude_job_patterns, '[]'),
+		       COALESCE(github_token, ''),
+		       COALESCE(min_data_days, 7), COALESCE(max_recs_per_scan, 20)
 		FROM auto_pr_settings
 		LIMIT 1
 	`).Scan(
 		&settings.TeamID, &settings.Enabled, &settings.MinSavingsPercent,
 		&settings.MinMonthlySavings, &settings.RequireConsecutive,
 		&settings.GPUPRsEnabled, &settings.GPUMinSavingsPercent,
-		&excludeReposJSON, &excludePatternsJSON,
+		&excludeReposJSON, &excludePatternsJSON, &settings.GitHubToken,
+		&settings.MinDataDays, &settings.MaxRecsPerScan,
 	)
 
 	if err == sql.ErrNoRows {
@@ -230,6 +253,8 @@ func (s *Server) getAutoPRSettings(c *gin.Context) {
 			RequireConsecutive:   3,
 			GPUPRsEnabled:        true,
 			GPUMinSavingsPercent: 15,
+			MinDataDays:          7,
+			MaxRecsPerScan:       20,
 			ExcludeRepositories:  []string{},
 			ExcludeJobPatterns:   []string{},
 		}
@@ -243,6 +268,18 @@ func (s *Server) getAutoPRSettings(c *gin.Context) {
 
 	json.Unmarshal(excludeReposJSON, &settings.ExcludeRepositories)
 	json.Unmarshal(excludePatternsJSON, &settings.ExcludeJobPatterns)
+
+	// Never send the raw token to the client — mask it.
+	rawToken := settings.GitHubToken
+	settings.GitHubToken = ""
+	if rawToken != "" {
+		settings.GitHubTokenSet = true
+		if len(rawToken) >= 4 {
+			settings.GitHubTokenHint = "\u2026" + rawToken[len(rawToken)-4:]
+		} else {
+			settings.GitHubTokenHint = "\u2026"
+		}
+	}
 
 	c.JSON(http.StatusOK, settings)
 }
@@ -258,10 +295,21 @@ func (s *Server) upsertAutoPRSettings(c *gin.Context) {
 	excludeReposJSON, _ := json.Marshal(settings.ExcludeRepositories)
 	excludePatternsJSON, _ := json.Marshal(settings.ExcludeJobPatterns)
 
+	// Encrypt the token before persisting (no-op if RUNRIGHT_ENCRYPTION_KEY is unset).
+	tokenToStore := settings.GitHubToken
+	var encErr error
+	if tokenToStore != "" {
+		tokenToStore, encErr = encryptPAT(tokenToStore)
+		if encErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt token: " + encErr.Error()})
+			return
+		}
+	}
+
 	// First ensure we have a default team if none exists
 	_, _ = s.db.ExecContext(ctx, `
-		INSERT INTO teams (id, name, created_at, updated_at)
-		VALUES ('default', 'Default Team', NOW(), NOW())
+		INSERT INTO teams (id, name, slug, created_at, updated_at)
+		VALUES ('default', 'Default Team', 'default', NOW(), NOW())
 		ON CONFLICT (id) DO NOTHING
 	`)
 
@@ -269,8 +317,10 @@ func (s *Server) upsertAutoPRSettings(c *gin.Context) {
 		INSERT INTO auto_pr_settings (
 			team_id, enabled, min_savings_percent, min_monthly_savings,
 			require_consecutive_runs, gpu_prs_enabled, gpu_min_savings_percent,
-			exclude_repositories, exclude_job_patterns, updated_at
-		) VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, NOW())
+			exclude_repositories, exclude_job_patterns, github_token,
+			github_token_updated_at, min_data_days, max_recs_per_scan, updated_at
+		) VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, $9,
+		          CASE WHEN $9 != '' THEN NOW() ELSE NULL END, $10, $11, NOW())
 		ON CONFLICT (team_id) DO UPDATE SET
 			enabled = EXCLUDED.enabled,
 			min_savings_percent = EXCLUDED.min_savings_percent,
@@ -280,10 +330,21 @@ func (s *Server) upsertAutoPRSettings(c *gin.Context) {
 			gpu_min_savings_percent = EXCLUDED.gpu_min_savings_percent,
 			exclude_repositories = EXCLUDED.exclude_repositories,
 			exclude_job_patterns = EXCLUDED.exclude_job_patterns,
+			github_token = CASE
+				WHEN EXCLUDED.github_token != '' THEN EXCLUDED.github_token
+				ELSE auto_pr_settings.github_token
+			END,
+			github_token_updated_at = CASE
+				WHEN EXCLUDED.github_token != '' THEN NOW()
+				ELSE auto_pr_settings.github_token_updated_at
+			END,
+			min_data_days = EXCLUDED.min_data_days,
+			max_recs_per_scan = EXCLUDED.max_recs_per_scan,
 			updated_at = NOW()
 	`, settings.Enabled, settings.MinSavingsPercent, settings.MinMonthlySavings,
 		settings.RequireConsecutive, settings.GPUPRsEnabled, settings.GPUMinSavingsPercent,
-		excludeReposJSON, excludePatternsJSON)
+		excludeReposJSON, excludePatternsJSON, tokenToStore,
+		settings.MinDataDays, settings.MaxRecsPerScan)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -440,46 +501,70 @@ func (s *Server) approvePRRecommendation(c *gin.Context) {
 		return
 	}
 
-	// Try to create a PR via GitHub API
-	prURL := ""
-	prNumber := 0
-
-	ghClient, err := s.getGitHubClient()
-	if err == nil {
-		prResult, err := ghClient.CreateRunnerRightSizePR(ctx, ghlib.PROptions{
-			Repository:       rec.Repository,
-			JobID:            rec.JobID,
-			WorkflowFile:     rec.WorkflowFile,
-			CurrentLabel:     rec.CurrentLabel,
-			NewLabel:         rec.RecommendedLabel,
-			CurrentVCPUs:     rec.CurrentVCPUs,
-			CurrentMemoryGiB: rec.CurrentMemoryGiB,
-			NewVCPUs:         rec.RecommendedVCPUs,
-			NewMemoryGiB:     rec.RecommendedMemoryGiB,
-			P95CPU:           rec.P95CPUPercent,
-			P95Memory:        rec.P95MemPercent,
-			RunCount:         rec.RunCount,
-			MonthlySavings:   rec.MonthlySavingsUSD,
-			SavingsPercent:   rec.SavingsPercent,
-			ConsecutiveRuns:  rec.ConsecutiveUnderutilized,
-		})
-		if err != nil {
-			// Log the error but don't fail - still mark as approved
-			fmt.Printf("warning: failed to create PR for recommendation %s: %v\n", id, err)
+	// Resolve GitHub token: DB setting takes precedence over env var.
+	ghClient, err := s.getGitHubClient(ctx)
+	if err != nil {
+		// Distinguish "no token at all" from "token exists but can't be used".
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "decrypt") || strings.Contains(errMsg, "RUNRIGHT_ENCRYPTION_KEY") {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error": "Stored GitHub token could not be decrypted: " + errMsg + ". Re-save the token in Auto PR → Settings.",
+			})
 		} else {
-			prURL = prResult.PRURL
-			prNumber = prResult.PRNumber
-
-			// Also insert into PR history
-			s.db.ExecContext(ctx, `
-				INSERT INTO pr_history (id, recommendation_id, team_id, repository, job_id, 
-				                        pr_number, pr_url, old_label, new_label, 
-				                        savings_percent, monthly_savings_usd, is_gpu_job, status)
-				VALUES ($1, $2, (SELECT team_id FROM pr_recommendations WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open')
-			`, uuid.New().String(), id, rec.Repository, rec.JobID, prNumber, prURL,
-				rec.CurrentLabel, rec.RecommendedLabel, rec.SavingsPercent, rec.MonthlySavingsUSD, rec.IsGPUJob)
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error": "No GitHub token configured. Add a Personal Access Token with the 'repo' and 'workflow' scopes in the Auto PR → Settings tab.",
+			})
 		}
+		return
 	}
+
+	prResult, prErr := ghClient.CreateRunnerRightSizePR(ctx, ghlib.PROptions{
+		Repository:       rec.Repository,
+		JobID:            rec.JobID,
+		WorkflowFile:     rec.WorkflowFile,
+		CurrentLabel:     rec.CurrentLabel,
+		NewLabel:         rec.RecommendedLabel,
+		CurrentVCPUs:     rec.CurrentVCPUs,
+		CurrentMemoryGiB: rec.CurrentMemoryGiB,
+		NewVCPUs:         rec.RecommendedVCPUs,
+		NewMemoryGiB:     rec.RecommendedMemoryGiB,
+		P95CPU:           rec.P95CPUPercent,
+		P95Memory:        rec.P95MemPercent,
+		RunCount:         rec.RunCount,
+		MonthlySavings:   rec.MonthlySavingsUSD,
+		SavingsPercent:   rec.SavingsPercent,
+		ConsecutiveRuns:  rec.ConsecutiveUnderutilized,
+	})
+	if prErr != nil {
+		msg := prErr.Error()
+		if strings.Contains(msg, "workflow") || strings.Contains(msg, "403") || strings.Contains(msg, "scope") {
+			msg += " — ensure your PAT has the 'workflow' scope (required to edit .github/workflows/ files)"
+		}
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "GitHub PR creation failed: " + msg})
+		return
+	}
+
+	prURL := prResult.PRURL
+	prNumber := prResult.PRNumber
+
+	// Defensive: CreateRunnerRightSizePR should always return a URL or error.
+	// If PRURL is empty despite no error, surface it rather than silently
+	// marking approved with no link (which leaves the card stuck forever).
+	if prURL == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("PR was created on branch %s but the URL was not returned by GitHub — check github.com/%s/pulls manually", prResult.Branch, rec.Repository),
+		})
+		return
+	}
+
+	// Record in PR history
+	s.db.ExecContext(ctx, `
+		INSERT INTO pr_history (id, recommendation_id, team_id, repository, job_id,
+		                        pr_number, pr_url, old_label, new_label,
+		                        savings_percent, monthly_savings_usd, is_gpu_job, status)
+		VALUES ($1, $2, (SELECT team_id FROM pr_recommendations WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open')
+	`, uuid.New().String(), id, rec.Repository, rec.JobID, prNumber, prURL,
+		rec.CurrentLabel, rec.RecommendedLabel, rec.SavingsPercent, rec.MonthlySavingsUSD, rec.IsGPUJob)
 
 	// Update the recommendation status
 	_, err = s.db.ExecContext(ctx, `
@@ -736,6 +821,391 @@ func (s *Server) listPRHistory(c *gin.Context) {
 }
 
 // getGitHubClient returns a GitHub API client if GITHUB_TOKEN is set
-func (s *Server) getGitHubClient() (*ghlib.Client, error) {
-	return ghlib.New()
+// ══════════════════════════════════════════════════════════════════════════════
+// PAT ENCRYPTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+// tokenEncryptionKey returns the 32-byte AES key derived from the
+// RUNRIGHT_ENCRYPTION_KEY environment variable, or nil if not set.
+// Use a key of at least 16 random characters in production.
+func tokenEncryptionKey() []byte {
+	raw := os.Getenv("RUNRIGHT_ENCRYPTION_KEY")
+	if raw == "" {
+		return nil
+	}
+	h := sha256.Sum256([]byte(raw))
+	return h[:]
+}
+
+// encryptPAT encrypts plaintext with AES-256-GCM when RUNRIGHT_ENCRYPTION_KEY
+// is set; otherwise returns plaintext unchanged.
+// Encrypted values are prefixed with "enc:v1:" for future-proof detection.
+func encryptPAT(plaintext string) (string, error) {
+	key := tokenEncryptionKey()
+	if key == nil || plaintext == "" {
+		return plaintext, nil
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("encryptPAT: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("encryptPAT: %w", err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", fmt.Errorf("encryptPAT: %w", err)
+	}
+	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	return "enc:v1:" + hex.EncodeToString(ciphertext), nil
+}
+
+// decryptPAT reverses encryptPAT.  Values that were stored without encryption
+// (no "enc:v1:" prefix) are returned as-is so old rows still work.
+func decryptPAT(stored string) (string, error) {
+	if !strings.HasPrefix(stored, "enc:v1:") {
+		return stored, nil // plaintext — backwards compatible
+	}
+	key := tokenEncryptionKey()
+	if key == nil {
+		return "", fmt.Errorf("token is encrypted but RUNRIGHT_ENCRYPTION_KEY is not set")
+	}
+	raw, err := hex.DecodeString(strings.TrimPrefix(stored, "enc:v1:"))
+	if err != nil {
+		return "", fmt.Errorf("decryptPAT: invalid hex: %w", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("decryptPAT: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("decryptPAT: %w", err)
+	}
+	ns := gcm.NonceSize()
+	if len(raw) < ns {
+		return "", fmt.Errorf("decryptPAT: ciphertext too short")
+	}
+	plaintext, err := gcm.Open(nil, raw[:ns], raw[ns:], nil)
+	if err != nil {
+		return "", fmt.Errorf("decryptPAT: authentication failed (wrong key?): %w", err)
+	}
+	return string(plaintext), nil
+}
+
+// getGitHubClient returns a GitHub API client.  It first checks the
+// auto_pr_settings table for a stored token (takes precedence), then falls
+// back to the GITHUB_TOKEN environment variable.
+func (s *Server) getGitHubClient(ctx context.Context) (*ghlib.Client, error) {
+	var stored string
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(github_token, '') FROM auto_pr_settings LIMIT 1`,
+	).Scan(&stored)
+	if stored != "" {
+		plaintext, err := decryptPAT(stored)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt stored GitHub token: %w", err)
+		}
+		return ghlib.NewWithToken(plaintext), nil
+	}
+	return ghlib.New() // falls back to GITHUB_TOKEN env var
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// BACKGROUND AUTO-PR WORKER
+// ══════════════════════════════════════════════════════════════════════════════
+
+// autoPRWorkerInterval is how often the worker scans for recently-completed jobs.
+const autoPRWorkerInterval = 15 * time.Minute
+
+// autoPRLookbackDefault is how far back each batch scan looks.  30 days covers
+// seed data and deployments where the server was offline for a while.
+const autoPRLookbackDefault = 30 * 24 * time.Hour
+
+// startAutoPRWorker runs until ctx is cancelled.  It should be launched as a
+// goroutine from Server.Run so it shares the server lifetime.
+func (s *Server) startAutoPRWorker(ctx context.Context) {
+	ticker := time.NewTicker(autoPRWorkerInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.runAutoPRBatch(ctx, autoPRLookbackDefault)
+		}
+	}
+}
+
+// runAutoPRBatch finds every distinct (job_id, repository) pair that received
+// at least one completed run in the given lookback window, then calls
+// checkAutoPRCandidate for each pair.  The default lookback (30 days) covers
+// seed data; pass a shorter duration for tighter rolling scans.
+func (s *Server) runAutoPRBatch(ctx context.Context, lookback time.Duration) {
+	// Respect the per-scan rate cap configured in settings (default 20).
+	var maxRecsPerScan = 20
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(max_recs_per_scan, 20) FROM auto_pr_settings LIMIT 1`,
+	).Scan(&maxRecsPerScan)
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT job_id, COALESCE(repository, '')
+		FROM jobs
+		WHERE status    = 'completed'
+		  AND created_at > NOW() - $1::interval
+	`, lookback.String())
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type pair struct{ jobID, repo string }
+	var pairs []pair
+	for rows.Next() {
+		var p pair
+		if rows.Scan(&p.jobID, &p.repo) == nil {
+			pairs = append(pairs, p)
+		}
+	}
+
+	newRecs := 0
+	for _, p := range pairs {
+		if newRecs >= maxRecsPerScan {
+			// Rate cap reached — remaining pairs deferred to the next scan cycle.
+			break
+		}
+		if s.checkAutoPRCandidate(p.jobID, p.repo) {
+			newRecs++
+		}
+	}
+}
+
+// triggerAutoPRScan runs an immediate full-history scan (up to 30 days).
+// Exposed via POST /api/v1/auto-pr/scan so the UI can trigger it on demand.
+func (s *Server) triggerAutoPRScan(c *gin.Context) {
+	ctx := c.Request.Context()
+	go s.runAutoPRBatch(ctx, autoPRLookbackDefault)
+	c.JSON(http.StatusAccepted, gin.H{"status": "scan started"})
+}
+
+// checkAutoPRCandidate is called after each completed job insertion.
+// It scans the last N completed runs of the same job_id+repository and, when
+// consecutive underutilisation is detected, upserts a pr_recommendations row
+// so it surfaces on the Auto PR page.
+// Returns true when a brand-new recommendation row was inserted.
+func (s *Server) checkAutoPRCandidate(jobID, repository string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// ── Load settings (fall back to defaults if not configured) ──────────────
+	var enabled = true
+	var minSavingsPct float64 = 20
+	var requireConsec = 5
+	var minDataDays = 7
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(enabled, true), min_savings_percent, require_consecutive_runs,
+		        COALESCE(min_data_days, 7)
+		 FROM auto_pr_settings LIMIT 1`,
+	).Scan(&enabled, &minSavingsPct, &requireConsec, &minDataDays)
+	if !enabled {
+		return false
+	}
+
+	// ── Guard: already has an open PR in pr_history for this job ─────────────
+	// Prevents duplicate PRs being opened if the recommendation is re-evaluated
+	// before the first PR is merged or closed.
+	var openPRs int
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pr_history
+		 WHERE repository = $1 AND job_id = $2 AND status = 'open'`,
+		repository, jobID,
+	).Scan(&openPRs)
+	if openPRs > 0 {
+		return false
+	}
+
+	// ── Query the last N completed runs (with timestamps for time-span check) ─
+	type runRow struct {
+		summaryJSON []byte
+		recsJSON    []byte
+		createdAt   time.Time
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT summary, recommendations, created_at
+		FROM jobs
+		WHERE job_id = $1
+		  AND ($2 = '' OR repository = $2)
+		  AND status = 'completed'
+		ORDER BY created_at DESC
+		LIMIT $3
+	`, jobID, repository, requireConsec)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+
+	var runs []runRow
+	for rows.Next() {
+		var r runRow
+		if err := rows.Scan(&r.summaryJSON, &r.recsJSON, &r.createdAt); err == nil {
+			runs = append(runs, r)
+		}
+	}
+	if len(runs) < requireConsec {
+		return false // not enough history yet
+	}
+
+	// ── Guard: time-span — oldest qualifying run must be ≥ minDataDays old ───
+	// An outage can dump many completed jobs in minutes; requiring the signal to
+	// span multiple calendar days prevents those bursts from creating bad recs.
+	if minDataDays > 0 {
+		oldest := runs[len(runs)-1].createdAt
+		if time.Since(oldest) < time.Duration(minDataDays)*24*time.Hour {
+			return false
+		}
+	}
+
+	// ── Check consecutive underutilisation (p95 CPU < 25 % on all N runs) ────
+	const cpuThreshold = 25.0
+	var p95Values []float64
+	for _, r := range runs {
+		var summary types.MetricsSummary
+		if err := json.Unmarshal(r.summaryJSON, &summary); err != nil {
+			return false
+		}
+		if summary.CPUPercentP95 > cpuThreshold {
+			return false
+		}
+		p95Values = append(p95Values, summary.CPUPercentP95)
+	}
+
+	// ── Guard: CPU signal stability (coefficient of variation < 0.5) ─────────
+	// If p95 CPU is highly variable across runs the signal is noisy — could be
+	// transient (incident day, cold start) rather than structural underuse.
+	if len(p95Values) >= 2 {
+		var sum float64
+		for _, v := range p95Values {
+			sum += v
+		}
+		mean := sum / float64(len(p95Values))
+		if mean > 0 {
+			var variance float64
+			for _, v := range p95Values {
+				d := v - mean
+				variance += d * d
+			}
+			stddev := variance / float64(len(p95Values)) // use variance directly to avoid math import
+			// stddev^2 / mean^2 > 0.25  ⟺  CV > 0.5
+			if stddev > 0.25*mean*mean {
+				return false
+			}
+		}
+	}
+
+	// ── Use the most recent run's data ────────────────────────────────────────
+	var latestSummary types.MetricsSummary
+	var latestRecs []types.Recommendation
+	if err := json.Unmarshal(runs[0].summaryJSON, &latestSummary); err != nil {
+		return false
+	}
+	_ = json.Unmarshal(runs[0].recsJSON, &latestRecs)
+
+	if latestSummary.DetectedMachine == nil || len(latestRecs) == 0 {
+		return false
+	}
+
+	// Find cheapest recommendation with a meaningful saving
+	var bestRec *types.Recommendation
+	for i := range latestRecs {
+		if latestRecs[i].CostDeltaPercent < 0 {
+			if bestRec == nil || latestRecs[i].CostDeltaPercent < bestRec.CostDeltaPercent {
+				bestRec = &latestRecs[i]
+			}
+		}
+	}
+	if bestRec == nil {
+		return false
+	}
+
+	savingsPct := -bestRec.CostDeltaPercent
+	if savingsPct < minSavingsPct {
+		return false
+	}
+
+	// ── Resolve runner labels via label_mappings (best-effort) ───────────────
+	currentLabel := latestSummary.DetectedMachine.ID
+	recommendedLabel := bestRec.Machine.ID
+
+	var mapped string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT label FROM label_mappings WHERE instance_type = $1 ORDER BY created_at LIMIT 1`,
+		latestSummary.DetectedMachine.ID,
+	).Scan(&mapped); err == nil && mapped != "" {
+		currentLabel = mapped
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT label FROM label_mappings WHERE instance_type = $1 ORDER BY created_at LIMIT 1`,
+		bestRec.Machine.ID,
+	).Scan(&mapped); err == nil && mapped != "" {
+		recommendedLabel = mapped
+	}
+
+	// ── Estimate monthly savings (assumes ~22 runs / month) ───────────────────
+	const runsPerMonth = 22.0
+	runHours := latestSummary.DurationSeconds / 3600.0
+	currentMonthly := latestSummary.DetectedMachine.OnDemandPricePerHour * runHours * runsPerMonth
+	recommendedMonthly := bestRec.Machine.OnDemandPricePerHour * runHours * runsPerMonth
+	monthlySavings := currentMonthly - recommendedMonthly
+
+	// ── Upsert: update existing pending row, or insert new one ────────────────
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE pr_recommendations
+		SET run_count              = run_count + 1,
+		    consecutive_underutilized = consecutive_underutilized + 1,
+		    p95_cpu_percent        = $1,
+		    p95_mem_percent        = $2,
+		    savings_percent        = $3,
+		    monthly_savings_usd    = $4,
+		    updated_at             = NOW()
+		WHERE repository = $5
+		  AND job_id     = $6
+		  AND status     = 'pending'
+		  AND team_id IS NULL
+	`, latestSummary.CPUPercentP95, latestSummary.MemUsedGiBP95,
+		savingsPct, monthlySavings, repository, jobID)
+	if err != nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		return false // updated existing, no new row
+	}
+
+	// Insert new recommendation
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO pr_recommendations (
+			id, repository, job_id,
+			current_label, current_vcpus, current_memory_gib, current_cost_per_hour,
+			recommended_label, recommended_vcpus, recommended_memory_gib, recommended_cost_per_hour,
+			p95_cpu_percent, p95_mem_percent,
+			run_count, consecutive_underutilized,
+			savings_percent, monthly_savings_usd, status
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$15,$16,'pending')
+	`, uuid.New().String(), repository, jobID,
+		currentLabel,
+		latestSummary.DetectedMachine.VCPUs,
+		latestSummary.DetectedMachine.MemoryGiB,
+		latestSummary.DetectedMachine.OnDemandPricePerHour,
+		recommendedLabel,
+		bestRec.Machine.VCPUs,
+		bestRec.Machine.MemoryGiB,
+		bestRec.Machine.OnDemandPricePerHour,
+		latestSummary.CPUPercentP95,
+		latestSummary.MemUsedGiBP95,
+		requireConsec,
+		savingsPct,
+		monthlySavings,
+	)
+	return err == nil
 }

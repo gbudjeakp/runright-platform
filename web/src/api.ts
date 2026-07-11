@@ -246,12 +246,21 @@ export interface AutoPRSettings {
   team_id?: string
   enabled: boolean
   min_savings_percent: number
-  min_monthly_savings: number
   require_consecutive_runs: number
-  gpu_prs_enabled: boolean
-  gpu_min_savings_percent: number
-  exclude_repositories: string[]
-  exclude_job_patterns: string[]
+  /** Min calendar days the qualifying runs must span. 0 = disabled. */
+  min_data_days: number
+  /** Max new recommendations created per background scan cycle. */
+  max_recs_per_scan: number
+  // Stored in DB but not yet surfaced in the UI (kept for future use):
+  min_monthly_savings?: number
+  gpu_prs_enabled?: boolean
+  gpu_min_savings_percent?: number
+  exclude_repositories?: string[]
+  exclude_job_patterns?: string[]
+  /** Write-only on PUT — never returned by GET. Use github_token_set / hint. */
+  github_token?: string
+  github_token_set?: boolean
+  github_token_hint?: string // e.g. "…a1b2"
 }
 
 export interface PRRecommendation {
@@ -335,6 +344,9 @@ export const fetchAutoPRSettings = (): Promise<AutoPRSettings> =>
 
 export const upsertAutoPRSettings = (settings: Partial<AutoPRSettings>): Promise<void> =>
   api.put('/auto-pr/settings', settings).then(() => undefined)
+
+export const triggerAutoPRScan = (): Promise<void> =>
+  api.post('/auto-pr/scan').then(() => undefined)
 
 // PR Recommendations
 export const fetchPRRecommendations = (status = 'pending', gpuOnly = false): Promise<PRRecommendation[]> =>

@@ -6,6 +6,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /runright-server ./cmd/server
 
 FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /runright-server /runright-server
 EXPOSE 8080
 ENTRYPOINT ["/runright-server"]

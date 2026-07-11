@@ -40,6 +40,14 @@ func main() {
 		}
 	}
 	fmt.Printf("\nSeeded %d jobs (%d failed)\n", ok, fail)
+
+	// Seed a pending Auto-PR recommendation for gbudjeakp/DevOps-learn so the
+	// Approve & Create PR flow can be tested immediately after seeding.
+	if err := postRecommendation(*url, *key); err != nil {
+		log.Printf("WARN recommendation seed: %v", err)
+	} else {
+		fmt.Println("  OK  devops-learn recommendation (pending, ubuntu-22.04 → ubuntu-latest)")
+	}
 }
 
 // --------------------------------------------------------------------------
@@ -67,6 +75,48 @@ func post(base, key string, p payload) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// postRecommendation seeds a pending Auto-PR recommendation for
+// gbudjeakp/DevOps-learn so the Approve & Create PR flow can be demoed
+// immediately without waiting for the background worker.
+func postRecommendation(base, key string) error {
+	body := map[string]any{
+		"repository":                "gbudjeakp/DevOps-learn",
+		"job_id":                    "devops-learn-github-hosted-build",
+		"workflow_file":             ".github/workflows/ci-hosted.yml",
+		"current_label":             "ubuntu-22.04",
+		"current_vcpus":             2,
+		"current_memory_gib":        7.0,
+		"current_cost_per_hour":     0.008,
+		"recommended_label":         "ubuntu-latest",
+		"recommended_vcpus":         2,
+		"recommended_memory_gib":    7.0,
+		"recommended_cost_per_hour": 0.006,
+		"p95_cpu_percent":           8.5,
+		"p95_mem_percent":           1.2,
+		"savings_percent":           25.0,
+		"monthly_savings_usd":       4.32,
+	}
+	b, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPost, base+"/api/v1/auto-pr/recommendations", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	// 409 means the recommendation already exists — that is fine.
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusConflict {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return nil
@@ -155,6 +205,26 @@ var awsP4d24XLarge = types.MachineType{
 	VCPUs: 96, MemoryGiB: 1152, NetworkGbps: 400, StorageType: "ebs",
 	Architecture: "x86_64", OnDemandPricePerHour: 32.77,
 	Tags: []string{"gpu", "ml-training", "most-expensive"},
+}
+
+// githubUbuntu4Cores represents the GitHub-hosted ubuntu-latest-4-cores runner
+// (4 vCPU, 16 GiB).  DevOps-learn currently uses this for its build step.
+var githubUbuntu4Cores = types.MachineType{
+	ID: "ubuntu-latest-4-cores", Provider: types.ProviderGitHub,
+	Family: "general-purpose", Series: "github-hosted",
+	VCPUs: 4, MemoryGiB: 16, NetworkGbps: 1, StorageType: "ssd",
+	Architecture: "x86_64", OnDemandPricePerHour: 0.016, // $0.016/min
+	Tags: []string{"github-hosted"},
+}
+
+// githubUbuntuLatest represents the standard 2-core GitHub-hosted runner
+// — the right-sized target for the DevOps-learn build jobs.
+var githubUbuntuLatest = types.MachineType{
+	ID: "ubuntu-latest", Provider: types.ProviderGitHub,
+	Family: "general-purpose", Series: "github-hosted",
+	VCPUs: 2, MemoryGiB: 7, NetworkGbps: 1, StorageType: "ssd",
+	Architecture: "x86_64", OnDemandPricePerHour: 0.008, // $0.008/min
+	Tags: []string{"github-hosted"},
 }
 
 // rng is a seeded random source for reproducible jitter.
@@ -462,6 +532,41 @@ func buildJobs() []payload {
 		now.AddDate(0, 0, -2).Add(7*time.Minute),
 		gcpE2Medium, jitter(24, 3), jitter(0.78, 0.06), 31))
 
+	// ═════════════════════════════════════════════════════════════════════
+	// DevOps-learn — GitHub-hosted runner history (gbudjeakp/DevOps-learn)
+	//
+	// All four stable job IDs from ci-hosted.yml are seeded.  The build job
+	// is on ubuntu-latest-4-cores but uses ≈9 % CPU — a clear downsize target.
+	// ═════════════════════════════════════════════════════════════════════
+
+	// build: 4-core runner, Vite build, ≈45 s, runs every push (daily)
+	for i := 29; i >= 0; i-- {
+		t := now.AddDate(0, 0, -i).Add(3 * time.Minute)
+		jobs = append(jobs, makeDevOpsLearnJob("devops-learn-github-hosted-build", t,
+			githubUbuntu4Cores, jitter(9, 2), jitter(0.9, 0.1), jitter(45, 8)))
+	}
+
+	// test: 2-core runner, Vitest, ≈30 s
+	for i := 29; i >= 0; i-- {
+		t := now.AddDate(0, 0, -i).Add(2 * time.Minute)
+		jobs = append(jobs, makeDevOpsLearnJob("devops-learn-github-hosted-test", t,
+			githubUbuntuLatest, jitter(14, 3), jitter(0.6, 0.08), jitter(30, 5)))
+	}
+
+	// lint: 2-core runner, ESLint, ≈20 s
+	for i := 29; i >= 0; i-- {
+		t := now.AddDate(0, 0, -i).Add(1 * time.Minute)
+		jobs = append(jobs, makeDevOpsLearnJob("devops-learn-github-hosted-lint", t,
+			githubUbuntuLatest, jitter(7, 2), jitter(0.4, 0.05), jitter(20, 4)))
+	}
+
+	// install: 2-core runner, npm ci, ≈25 s
+	for i := 29; i >= 0; i-- {
+		t := now.AddDate(0, 0, -i)
+		jobs = append(jobs, makeDevOpsLearnJob("devops-learn-github-hosted-install", t,
+			githubUbuntuLatest, jitter(18, 3), jitter(0.5, 0.06), jitter(25, 5)))
+	}
+
 	return jobs
 }
 
@@ -476,6 +581,37 @@ func makeInterruptedJob(
 	p := makeJob(jobID, ciPlatform, at, detected, cpuP95, memP95GiB, durationSec)
 	p.Summary.RunID = fmt.Sprintf("seed-%s-%x", jobID, rng.Int63())
 	p.Summary.Status = "heartbeat"
+	return p
+}
+
+// makeDevOpsLearnJob builds a job payload for the DevOps-learn CI pipeline.
+// It hard-codes repository and ci_platform and forces the recommendation to
+// suggest ubuntu-latest as the right-sized alternative.
+func makeDevOpsLearnJob(
+	jobID string, at time.Time,
+	detected types.MachineType,
+	cpuP95, memP95GiB, durationSec float64,
+) payload {
+	p := makeJob(jobID, "github", at, detected, cpuP95, memP95GiB, durationSec)
+	p.Summary.Repository = "gbudjeakp/DevOps-learn"
+	// For the 4-core build step, always recommend ubuntu-latest as the cheaper label
+	if detected.ID == "ubuntu-latest-4-cores" {
+		currentMonthly := detected.OnDemandPricePerHour * 720
+		p.Recommendations = []types.Recommendation{
+			{
+				Machine:          githubUbuntuLatest,
+				Tier:             types.TierCheaper,
+				EstimatedMonthly: githubUbuntuLatest.OnDemandPricePerHour * 720,
+				CurrentMonthly:   currentMonthly,
+				CostDeltaPercent: (githubUbuntuLatest.OnDemandPricePerHour - detected.OnDemandPricePerHour) /
+					detected.OnDemandPricePerHour * 100, // -50%
+				Reasoning: fmt.Sprintf(
+					"p95 CPU %.1f%% on %d vCPUs — ubuntu-latest (2 vCPU) is sufficient",
+					cpuP95, detected.VCPUs,
+				),
+			},
+		}
+	}
 	return p
 }
 
@@ -550,6 +686,12 @@ func seededRepository(jobID string) string {
 	// API Gateway
 	case "api-tests", "contract-tests":
 		return "runrightio/api-gateway"
+	// DevOps-learn
+	case "devops-learn-github-hosted-build",
+		"devops-learn-github-hosted-test",
+		"devops-learn-github-hosted-lint",
+		"devops-learn-github-hosted-install":
+		return "gbudjeakp/DevOps-learn"
 	default:
 		return "runrightio/misc"
 	}
