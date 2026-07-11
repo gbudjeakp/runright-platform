@@ -247,6 +247,10 @@ export interface AutoPRSettings {
   enabled: boolean
   min_savings_percent: number
   require_consecutive_runs: number
+  /** Min calendar days the qualifying runs must span. 0 = disabled. */
+  min_data_days: number
+  /** Max new recommendations created per background scan cycle. */
+  max_recs_per_scan: number
   // Stored in DB but not yet surfaced in the UI (kept for future use):
   min_monthly_savings?: number
   gpu_prs_enabled?: boolean

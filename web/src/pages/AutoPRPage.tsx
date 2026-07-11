@@ -1067,6 +1067,36 @@ function SettingsTab({ settings, onSave }: {
               onChange={(e) => setForm({ ...form, require_consecutive_runs: parseInt(e.target.value) })}
             />
           </div>
+          <div>
+            <label className="block font-deco text-[11px] tracking-[1px] uppercase text-[var(--text-mid)] mb-1">
+              Min Data Span (days)
+            </label>
+            <input
+              type="number"
+              min={0}
+              className="rr-input"
+              value={form.min_data_days}
+              onChange={(e) => setForm({ ...form, min_data_days: parseInt(e.target.value) })}
+            />
+            <p className="text-[var(--text-light)] text-xs mt-1">
+              Qualifying runs must span at least this many calendar days. Prevents incident-day spikes from triggering false recommendations. 0 = disabled.
+            </p>
+          </div>
+          <div>
+            <label className="block font-deco text-[11px] tracking-[1px] uppercase text-[var(--text-mid)] mb-1">
+              Max Recs Per Scan
+            </label>
+            <input
+              type="number"
+              min={1}
+              className="rr-input"
+              value={form.max_recs_per_scan}
+              onChange={(e) => setForm({ ...form, max_recs_per_scan: parseInt(e.target.value) })}
+            />
+            <p className="text-[var(--text-light)] text-xs mt-1">
+              Hard cap on new recommendations created per background scan cycle.
+            </p>
+          </div>
         </div>
       </div>
 

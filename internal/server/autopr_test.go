@@ -139,7 +139,15 @@ func TestCheckAutoPRCandidate_CreatesRecommendation(t *testing.T) {
 	repo := fmt.Sprintf("test-org/repo-%d", time.Now().UnixNano())
 	jobID := "build-underutilised"
 
+	// Disable time-span guard: all test jobs have NOW() timestamps so they
+	// wouldn't span 7 days.  min_data_days=0 skips that check.
+	s.db.Exec(`INSERT INTO teams (id, name, slug, created_at, updated_at) VALUES ('default', 'Default', 'default', NOW(), NOW()) ON CONFLICT DO NOTHING`)
+	s.db.Exec(`INSERT INTO auto_pr_settings (team_id, enabled, min_savings_percent, min_monthly_savings, require_consecutive_runs, gpu_prs_enabled, gpu_min_savings_percent, github_token, min_data_days, max_recs_per_scan, updated_at)
+		VALUES ('default', true, 20, 0, 5, false, 0, '', 0, 100, NOW())
+		ON CONFLICT (team_id) DO UPDATE SET min_data_days = 0, max_recs_per_scan = 100`)
+
 	t.Cleanup(func() {
+		s.db.Exec(`DELETE FROM auto_pr_settings WHERE team_id = 'default'`)
 		s.db.Exec(`DELETE FROM jobs WHERE job_id = $1 AND repository = $2`, jobID, repo)
 		s.db.Exec(`DELETE FROM pr_recommendations WHERE job_id = $1 AND repository = $2`, jobID, repo)
 	})
@@ -183,7 +191,14 @@ func TestCheckAutoPRCandidate_IncrementsCounters(t *testing.T) {
 	repo := fmt.Sprintf("test-org/repo-%d", time.Now().UnixNano())
 	jobID := "build-increment"
 
+	// Disable time-span guard for the same reason as CreatesRecommendation.
+	s.db.Exec(`INSERT INTO teams (id, name, slug, created_at, updated_at) VALUES ('default', 'Default', 'default', NOW(), NOW()) ON CONFLICT DO NOTHING`)
+	s.db.Exec(`INSERT INTO auto_pr_settings (team_id, enabled, min_savings_percent, min_monthly_savings, require_consecutive_runs, gpu_prs_enabled, gpu_min_savings_percent, github_token, min_data_days, max_recs_per_scan, updated_at)
+		VALUES ('default', true, 20, 0, 5, false, 0, '', 0, 100, NOW())
+		ON CONFLICT (team_id) DO UPDATE SET min_data_days = 0, max_recs_per_scan = 100`)
+
 	t.Cleanup(func() {
+		s.db.Exec(`DELETE FROM auto_pr_settings WHERE team_id = 'default'`)
 		s.db.Exec(`DELETE FROM jobs WHERE job_id = $1 AND repository = $2`, jobID, repo)
 		s.db.Exec(`DELETE FROM pr_recommendations WHERE job_id = $1 AND repository = $2`, jobID, repo)
 	})

@@ -52,6 +52,11 @@ type AutoPRSettings struct {
 	GPUMinSavingsPercent float64  `json:"gpu_min_savings_percent"`
 	ExcludeRepositories  []string `json:"exclude_repositories"`
 	ExcludeJobPatterns   []string `json:"exclude_job_patterns"`
+	// MinDataDays: oldest of the N qualifying runs must be at least this many
+	// days old. Prevents an incident-day burst from generating fake recs.
+	// 0 = disabled.
+	MinDataDays    int `json:"min_data_days"`
+	MaxRecsPerScan int `json:"max_recs_per_scan"`
 	// GitHubToken is write-only: accepted on PUT, NEVER returned on GET.
 	// Use GitHubTokenSet + GitHubTokenHint to show status in the UI.
 	GitHubToken     string `json:"github_token,omitempty"`
@@ -227,7 +232,8 @@ func (s *Server) getAutoPRSettings(c *gin.Context) {
 		SELECT team_id, enabled, min_savings_percent, min_monthly_savings,
 		       require_consecutive_runs, gpu_prs_enabled, gpu_min_savings_percent,
 		       COALESCE(exclude_repositories, '[]'), COALESCE(exclude_job_patterns, '[]'),
-		       COALESCE(github_token, '')
+		       COALESCE(github_token, ''),
+		       COALESCE(min_data_days, 7), COALESCE(max_recs_per_scan, 20)
 		FROM auto_pr_settings
 		LIMIT 1
 	`).Scan(
@@ -235,6 +241,7 @@ func (s *Server) getAutoPRSettings(c *gin.Context) {
 		&settings.MinMonthlySavings, &settings.RequireConsecutive,
 		&settings.GPUPRsEnabled, &settings.GPUMinSavingsPercent,
 		&excludeReposJSON, &excludePatternsJSON, &settings.GitHubToken,
+		&settings.MinDataDays, &settings.MaxRecsPerScan,
 	)
 
 	if err == sql.ErrNoRows {
@@ -246,6 +253,8 @@ func (s *Server) getAutoPRSettings(c *gin.Context) {
 			RequireConsecutive:   3,
 			GPUPRsEnabled:        true,
 			GPUMinSavingsPercent: 15,
+			MinDataDays:          7,
+			MaxRecsPerScan:       20,
 			ExcludeRepositories:  []string{},
 			ExcludeJobPatterns:   []string{},
 		}
@@ -309,9 +318,9 @@ func (s *Server) upsertAutoPRSettings(c *gin.Context) {
 			team_id, enabled, min_savings_percent, min_monthly_savings,
 			require_consecutive_runs, gpu_prs_enabled, gpu_min_savings_percent,
 			exclude_repositories, exclude_job_patterns, github_token,
-			github_token_updated_at, updated_at
+			github_token_updated_at, min_data_days, max_recs_per_scan, updated_at
 		) VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, $9,
-		          CASE WHEN $9 != '' THEN NOW() ELSE NULL END, NOW())
+		          CASE WHEN $9 != '' THEN NOW() ELSE NULL END, $10, $11, NOW())
 		ON CONFLICT (team_id) DO UPDATE SET
 			enabled = EXCLUDED.enabled,
 			min_savings_percent = EXCLUDED.min_savings_percent,
@@ -329,10 +338,13 @@ func (s *Server) upsertAutoPRSettings(c *gin.Context) {
 				WHEN EXCLUDED.github_token != '' THEN NOW()
 				ELSE auto_pr_settings.github_token_updated_at
 			END,
+			min_data_days = EXCLUDED.min_data_days,
+			max_recs_per_scan = EXCLUDED.max_recs_per_scan,
 			updated_at = NOW()
 	`, settings.Enabled, settings.MinSavingsPercent, settings.MinMonthlySavings,
 		settings.RequireConsecutive, settings.GPUPRsEnabled, settings.GPUMinSavingsPercent,
-		excludeReposJSON, excludePatternsJSON, tokenToStore)
+		excludeReposJSON, excludePatternsJSON, tokenToStore,
+		settings.MinDataDays, settings.MaxRecsPerScan)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -913,6 +925,12 @@ func (s *Server) startAutoPRWorker(ctx context.Context) {
 // checkAutoPRCandidate for each pair.  The default lookback (30 days) covers
 // seed data; pass a shorter duration for tighter rolling scans.
 func (s *Server) runAutoPRBatch(ctx context.Context, lookback time.Duration) {
+	// Respect the per-scan rate cap configured in settings (default 20).
+	var maxRecsPerScan = 20
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(max_recs_per_scan, 20) FROM auto_pr_settings LIMIT 1`,
+	).Scan(&maxRecsPerScan)
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT DISTINCT job_id, COALESCE(repository, '')
 		FROM jobs
@@ -933,8 +951,15 @@ func (s *Server) runAutoPRBatch(ctx context.Context, lookback time.Duration) {
 		}
 	}
 
+	newRecs := 0
 	for _, p := range pairs {
-		s.checkAutoPRCandidate(p.jobID, p.repo)
+		if newRecs >= maxRecsPerScan {
+			// Rate cap reached — remaining pairs deferred to the next scan cycle.
+			break
+		}
+		if s.checkAutoPRCandidate(p.jobID, p.repo) {
+			newRecs++
+		}
 	}
 }
 
@@ -950,7 +975,8 @@ func (s *Server) triggerAutoPRScan(c *gin.Context) {
 // It scans the last N completed runs of the same job_id+repository and, when
 // consecutive underutilisation is detected, upserts a pr_recommendations row
 // so it surfaces on the Auto PR page.
-func (s *Server) checkAutoPRCandidate(jobID, repository string) {
+// Returns true when a brand-new recommendation row was inserted.
+func (s *Server) checkAutoPRCandidate(jobID, repository string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -958,20 +984,37 @@ func (s *Server) checkAutoPRCandidate(jobID, repository string) {
 	var enabled = true
 	var minSavingsPct float64 = 20
 	var requireConsec = 5
+	var minDataDays = 7
 	_ = s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(enabled, true), min_savings_percent, require_consecutive_runs FROM auto_pr_settings LIMIT 1`,
-	).Scan(&enabled, &minSavingsPct, &requireConsec)
+		`SELECT COALESCE(enabled, true), min_savings_percent, require_consecutive_runs,
+		        COALESCE(min_data_days, 7)
+		 FROM auto_pr_settings LIMIT 1`,
+	).Scan(&enabled, &minSavingsPct, &requireConsec, &minDataDays)
 	if !enabled {
-		return // auto-PR generation is turned off
+		return false
 	}
 
-	// ── Query the last N completed runs ───────────────────────────────────────
+	// ── Guard: already has an open PR in pr_history for this job ─────────────
+	// Prevents duplicate PRs being opened if the recommendation is re-evaluated
+	// before the first PR is merged or closed.
+	var openPRs int
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pr_history
+		 WHERE repository = $1 AND job_id = $2 AND status = 'open'`,
+		repository, jobID,
+	).Scan(&openPRs)
+	if openPRs > 0 {
+		return false
+	}
+
+	// ── Query the last N completed runs (with timestamps for time-span check) ─
 	type runRow struct {
 		summaryJSON []byte
 		recsJSON    []byte
+		createdAt   time.Time
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT summary, recommendations
+		SELECT summary, recommendations, created_at
 		FROM jobs
 		WHERE job_id = $1
 		  AND ($2 = '' OR repository = $2)
@@ -980,30 +1023,65 @@ func (s *Server) checkAutoPRCandidate(jobID, repository string) {
 		LIMIT $3
 	`, jobID, repository, requireConsec)
 	if err != nil {
-		return
+		return false
 	}
 	defer rows.Close()
 
 	var runs []runRow
 	for rows.Next() {
 		var r runRow
-		if err := rows.Scan(&r.summaryJSON, &r.recsJSON); err == nil {
+		if err := rows.Scan(&r.summaryJSON, &r.recsJSON, &r.createdAt); err == nil {
 			runs = append(runs, r)
 		}
 	}
 	if len(runs) < requireConsec {
-		return // not enough history yet
+		return false // not enough history yet
+	}
+
+	// ── Guard: time-span — oldest qualifying run must be ≥ minDataDays old ───
+	// An outage can dump many completed jobs in minutes; requiring the signal to
+	// span multiple calendar days prevents those bursts from creating bad recs.
+	if minDataDays > 0 {
+		oldest := runs[len(runs)-1].createdAt
+		if time.Since(oldest) < time.Duration(minDataDays)*24*time.Hour {
+			return false
+		}
 	}
 
 	// ── Check consecutive underutilisation (p95 CPU < 25 % on all N runs) ────
 	const cpuThreshold = 25.0
+	var p95Values []float64
 	for _, r := range runs {
 		var summary types.MetricsSummary
 		if err := json.Unmarshal(r.summaryJSON, &summary); err != nil {
-			return
+			return false
 		}
 		if summary.CPUPercentP95 > cpuThreshold {
-			return
+			return false
+		}
+		p95Values = append(p95Values, summary.CPUPercentP95)
+	}
+
+	// ── Guard: CPU signal stability (coefficient of variation < 0.5) ─────────
+	// If p95 CPU is highly variable across runs the signal is noisy — could be
+	// transient (incident day, cold start) rather than structural underuse.
+	if len(p95Values) >= 2 {
+		var sum float64
+		for _, v := range p95Values {
+			sum += v
+		}
+		mean := sum / float64(len(p95Values))
+		if mean > 0 {
+			var variance float64
+			for _, v := range p95Values {
+				d := v - mean
+				variance += d * d
+			}
+			stddev := variance / float64(len(p95Values)) // use variance directly to avoid math import
+			// stddev^2 / mean^2 > 0.25  ⟺  CV > 0.5
+			if stddev > 0.25*mean*mean {
+				return false
+			}
 		}
 	}
 
@@ -1011,12 +1089,12 @@ func (s *Server) checkAutoPRCandidate(jobID, repository string) {
 	var latestSummary types.MetricsSummary
 	var latestRecs []types.Recommendation
 	if err := json.Unmarshal(runs[0].summaryJSON, &latestSummary); err != nil {
-		return
+		return false
 	}
 	_ = json.Unmarshal(runs[0].recsJSON, &latestRecs)
 
 	if latestSummary.DetectedMachine == nil || len(latestRecs) == 0 {
-		return
+		return false
 	}
 
 	// Find cheapest recommendation with a meaningful saving
@@ -1029,12 +1107,12 @@ func (s *Server) checkAutoPRCandidate(jobID, repository string) {
 		}
 	}
 	if bestRec == nil {
-		return
+		return false
 	}
 
 	savingsPct := -bestRec.CostDeltaPercent
 	if savingsPct < minSavingsPct {
-		return
+		return false
 	}
 
 	// ── Resolve runner labels via label_mappings (best-effort) ───────────────
@@ -1079,15 +1157,15 @@ func (s *Server) checkAutoPRCandidate(jobID, repository string) {
 	`, latestSummary.CPUPercentP95, latestSummary.MemUsedGiBP95,
 		savingsPct, monthlySavings, repository, jobID)
 	if err != nil {
-		return
+		return false
 	}
 	n, _ := res.RowsAffected()
 	if n > 0 {
-		return // updated existing
+		return false // updated existing, no new row
 	}
 
 	// Insert new recommendation
-	_, _ = s.db.ExecContext(ctx, `
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO pr_recommendations (
 			id, repository, job_id,
 			current_label, current_vcpus, current_memory_gib, current_cost_per_hour,
@@ -1111,4 +1189,5 @@ func (s *Server) checkAutoPRCandidate(jobID, repository string) {
 		savingsPct,
 		monthlySavings,
 	)
+	return err == nil
 }
