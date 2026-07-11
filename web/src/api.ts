@@ -252,6 +252,7 @@ export interface AutoPRSettings {
   gpu_min_savings_percent: number
   exclude_repositories: string[]
   exclude_job_patterns: string[]
+  github_token?: string
 }
 
 export interface PRRecommendation {

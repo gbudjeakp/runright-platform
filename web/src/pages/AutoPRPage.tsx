@@ -77,8 +77,11 @@ export default function AutoPRPage() {
         setNote('Recommendation approved (PR creation pending)')
       }
       loadData()
-    } catch {
-      setError('Failed to approve')
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+        ?? 'Failed to approve'
+      setError(msg)
     }
   }
 
@@ -900,6 +903,7 @@ function SettingsTab({ settings, onSave }: {
 }) {
   const [form, setForm] = useState(settings)
   const [saving, setSaving] = useState(false)
+  const [tokenVisible, setTokenVisible] = useState(false)
 
   const handleSave = async () => {
     setSaving(true)
@@ -909,6 +913,36 @@ function SettingsTab({ settings, onSave }: {
 
   return (
     <div className="max-w-2xl">
+      {/* ── GitHub Token ─────────────────────────────────────────── */}
+      <div className="rr-card mb-5">
+        <h3 className="font-serif text-lg text-[var(--text)] mb-1">GitHub Token</h3>
+        <p className="text-[var(--text-light)] text-sm mb-4">
+          A Personal Access Token with <code className="text-xs bg-[var(--paper)] px-1 rounded">contents</code> and{' '}
+          <code className="text-xs bg-[var(--paper)] px-1 rounded">pull_requests</code> scopes.
+          Required to open PRs. Leave blank to use the server&rsquo;s{' '}
+          <code className="text-xs bg-[var(--paper)] px-1 rounded">GITHUB_TOKEN</code> env var.
+        </p>
+        <div className="flex gap-2">
+          <input
+            type={tokenVisible ? 'text' : 'password'}
+            className="rr-input flex-1 font-mono text-sm"
+            placeholder="ghp_…  (stored encrypted-at-rest in the database)"
+            value={form.github_token ?? ''}
+            onChange={(e) => setForm({ ...form, github_token: e.target.value })}
+            autoComplete="off"
+          />
+          <button
+            type="button"
+            className="btn-rr-outline px-3"
+            onClick={() => setTokenVisible((v) => !v)}
+            title={tokenVisible ? 'Hide' : 'Show'}
+          >
+            {tokenVisible ? '🙈' : '👁'}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Auto-PR Generation ────────────────────────────────────── */}
       <div className="rr-card mb-5">
         <h3 className="font-serif text-lg text-[var(--text)] mb-4">Auto-PR Generation</h3>
         <label className="flex items-center gap-3 cursor-pointer mb-3">

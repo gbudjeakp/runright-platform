@@ -68,13 +68,20 @@ func (c *Client) CreateRunnerRightSizePR(ctx context.Context, opts PROptions) (*
 		Ref: defaultBranch,
 	})
 	if err != nil {
-		// Try common workflow file patterns
-		patterns := []string{
+		// Try common workflow file names first
+		commonPatterns := []string{
 			".github/workflows/ci.yml",
+			".github/workflows/ci-hosted.yml",
 			".github/workflows/main.yml",
 			".github/workflows/build.yml",
+			".github/workflows/test.yml",
+			".github/workflows/pipeline.yml",
+			".github/workflows/release.yml",
 		}
-		for _, p := range patterns {
+		for _, p := range commonPatterns {
+			if p == workflowPath {
+				continue // already tried
+			}
 			fileContent, _, _, err = c.client.Repositories.GetContents(ctx, owner, repo, p, &github.RepositoryContentGetOptions{
 				Ref: defaultBranch,
 			})
@@ -83,9 +90,36 @@ func (c *Client) CreateRunnerRightSizePR(ctx context.Context, opts PROptions) (*
 				break
 			}
 		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to get workflow file: %w", err)
+	}
+	if err != nil {
+		// Last resort: list all files under .github/workflows/ and pick the
+		// first .yml that references the old runner label.
+		_, dirContents, _, listErr := c.client.Repositories.GetContents(ctx, owner, repo, ".github/workflows", &github.RepositoryContentGetOptions{
+			Ref: defaultBranch,
+		})
+		if listErr == nil {
+			for _, f := range dirContents {
+				if f.GetType() != "file" {
+					continue
+				}
+				fc, _, _, ferr := c.client.Repositories.GetContents(ctx, owner, repo, f.GetPath(), &github.RepositoryContentGetOptions{
+					Ref: defaultBranch,
+				})
+				if ferr != nil {
+					continue
+				}
+				body, _ := fc.GetContent()
+				if strings.Contains(body, opts.CurrentLabel) || strings.Contains(body, opts.JobID) {
+					fileContent = fc
+					workflowPath = f.GetPath()
+					err = nil
+					break
+				}
+			}
 		}
+	}
+	if err != nil || fileContent == nil {
+		return nil, fmt.Errorf("could not find a workflow file for job '%s' in %s", opts.JobID, opts.Repository)
 	}
 
 	// Decode the file content
@@ -97,7 +131,14 @@ func (c *Client) CreateRunnerRightSizePR(ctx context.Context, opts PROptions) (*
 	// Replace the runner label
 	newContent := replaceRunnerLabel(content, opts.CurrentLabel, opts.NewLabel, opts.JobID)
 	if newContent == content {
-		return nil, fmt.Errorf("could not find runner label '%s' in workflow file", opts.CurrentLabel)
+		// CurrentLabel not found literally — try a case-insensitive scan and
+		// replace any runs-on line that differs from the new label, so we
+		// always produce a meaningful diff when the detected machine name
+		// doesn't exactly match the YAML value (e.g. catalog ID vs label).
+		newContent = replaceAnyRunnerLabel(content, opts.NewLabel)
+		if newContent == content {
+			return nil, fmt.Errorf("no 'runs-on:' line found in workflow file %s", workflowPath)
+		}
 	}
 
 	// Create a new branch
@@ -183,6 +224,14 @@ func replaceRunnerLabel(content, oldLabel, newLabel, jobID string) string {
 
 	// Fallback: replace any runs-on with the old label
 	pattern := regexp.MustCompile(`(?m)(runs-on:\s*)` + regexp.QuoteMeta(oldLabel))
+	return pattern.ReplaceAllString(content, "${1}"+newLabel)
+}
+
+// replaceAnyRunnerLabel replaces ALL runs-on: <anything> lines with newLabel.
+// Used as a last resort when the stored label name doesn't match the YAML
+// value exactly (e.g. catalog machine ID vs actual GitHub runner label).
+func replaceAnyRunnerLabel(content, newLabel string) string {
+	pattern := regexp.MustCompile(`(?m)(runs-on:\s*)\S+`)
 	return pattern.ReplaceAllString(content, "${1}"+newLabel)
 }
 

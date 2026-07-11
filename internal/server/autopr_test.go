@@ -215,7 +215,7 @@ func TestAutoPRSettings_GetAndUpsert(t *testing.T) {
 	s := newAutoPRTestServer(t)
 
 	// Ensure default team exists (required for settings FK)
-	s.db.Exec(`INSERT INTO teams (id, name, created_at, updated_at) VALUES ('default', 'Default', NOW(), NOW()) ON CONFLICT DO NOTHING`)
+	s.db.Exec(`INSERT INTO teams (id, name, slug, created_at, updated_at) VALUES ('default', 'Default', 'default', NOW(), NOW()) ON CONFLICT DO NOTHING`)
 
 	t.Cleanup(func() {
 		s.db.Exec(`DELETE FROM auto_pr_settings WHERE team_id = 'default'`)
@@ -355,25 +355,25 @@ func TestAutoPRRecommendations_Approve(t *testing.T) {
 	}, &created)
 	recID := created["id"]
 
-	// Approve — GITHUB_TOKEN not set in test env, so no real PR is created,
-	// but the status should still become "approved"
-	var approveResp map[string]any
+	// Approve without a GitHub token → now returns 422 with a clear message
+	// rather than silently marking approved.
+	var errResp map[string]any
 	code := doJSON(t, s, http.MethodPost,
 		"/api/v1/auto-pr/recommendations/"+recID+"/approve",
-		nil, &approveResp,
+		nil, &errResp,
 	)
-	if code != http.StatusOK {
-		t.Fatalf("POST approve code = %d", code)
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("POST approve without token: want 422, got %d", code)
 	}
-	if approveResp["status"] != "approved" {
-		t.Errorf("approve response status = %v, want approved", approveResp["status"])
+	if errMsg, _ := errResp["error"].(string); errMsg == "" {
+		t.Error("expected non-empty error message in response body")
 	}
 
-	// Verify DB status
+	// DB status must still be pending (recommendation was NOT auto-approved)
 	var dbStatus string
 	s.db.QueryRow(`SELECT status FROM pr_recommendations WHERE id = $1`, recID).Scan(&dbStatus)
-	if dbStatus != "approved" {
-		t.Errorf("DB status after approve = %q, want approved", dbStatus)
+	if dbStatus != "pending" {
+		t.Errorf("DB status without token = %q, want pending", dbStatus)
 	}
 }
 

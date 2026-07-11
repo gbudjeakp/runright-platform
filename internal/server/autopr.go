@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -44,6 +43,10 @@ type AutoPRSettings struct {
 	GPUMinSavingsPercent float64  `json:"gpu_min_savings_percent"`
 	ExcludeRepositories  []string `json:"exclude_repositories"`
 	ExcludeJobPatterns   []string `json:"exclude_job_patterns"`
+	// GitHubToken is a per-team PAT used to open PRs; takes precedence over
+	// the GITHUB_TOKEN environment variable.  Stored as plain-text in the DB
+	// (users should create a fine-grained token scoped to their repos).
+	GitHubToken string `json:"github_token,omitempty"`
 }
 
 // PRRecommendation represents a suggested optimization
@@ -213,14 +216,15 @@ func (s *Server) getAutoPRSettings(c *gin.Context) {
 	err := s.db.QueryRowContext(ctx, `
 		SELECT team_id, enabled, min_savings_percent, min_monthly_savings,
 		       require_consecutive_runs, gpu_prs_enabled, gpu_min_savings_percent,
-		       COALESCE(exclude_repositories, '[]'), COALESCE(exclude_job_patterns, '[]')
+		       COALESCE(exclude_repositories, '[]'), COALESCE(exclude_job_patterns, '[]'),
+		       COALESCE(github_token, '')
 		FROM auto_pr_settings
 		LIMIT 1
 	`).Scan(
 		&settings.TeamID, &settings.Enabled, &settings.MinSavingsPercent,
 		&settings.MinMonthlySavings, &settings.RequireConsecutive,
 		&settings.GPUPRsEnabled, &settings.GPUMinSavingsPercent,
-		&excludeReposJSON, &excludePatternsJSON,
+		&excludeReposJSON, &excludePatternsJSON, &settings.GitHubToken,
 	)
 
 	if err == sql.ErrNoRows {
@@ -262,8 +266,8 @@ func (s *Server) upsertAutoPRSettings(c *gin.Context) {
 
 	// First ensure we have a default team if none exists
 	_, _ = s.db.ExecContext(ctx, `
-		INSERT INTO teams (id, name, created_at, updated_at)
-		VALUES ('default', 'Default Team', NOW(), NOW())
+		INSERT INTO teams (id, name, slug, created_at, updated_at)
+		VALUES ('default', 'Default Team', 'default', NOW(), NOW())
 		ON CONFLICT (id) DO NOTHING
 	`)
 
@@ -271,8 +275,10 @@ func (s *Server) upsertAutoPRSettings(c *gin.Context) {
 		INSERT INTO auto_pr_settings (
 			team_id, enabled, min_savings_percent, min_monthly_savings,
 			require_consecutive_runs, gpu_prs_enabled, gpu_min_savings_percent,
-			exclude_repositories, exclude_job_patterns, updated_at
-		) VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, NOW())
+			exclude_repositories, exclude_job_patterns, github_token,
+			github_token_updated_at, updated_at
+		) VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, $9,
+		          CASE WHEN $9 != '' THEN NOW() ELSE NULL END, NOW())
 		ON CONFLICT (team_id) DO UPDATE SET
 			enabled = EXCLUDED.enabled,
 			min_savings_percent = EXCLUDED.min_savings_percent,
@@ -282,10 +288,18 @@ func (s *Server) upsertAutoPRSettings(c *gin.Context) {
 			gpu_min_savings_percent = EXCLUDED.gpu_min_savings_percent,
 			exclude_repositories = EXCLUDED.exclude_repositories,
 			exclude_job_patterns = EXCLUDED.exclude_job_patterns,
+			github_token = CASE
+				WHEN EXCLUDED.github_token != '' THEN EXCLUDED.github_token
+				ELSE auto_pr_settings.github_token
+			END,
+			github_token_updated_at = CASE
+				WHEN EXCLUDED.github_token != '' THEN NOW()
+				ELSE auto_pr_settings.github_token_updated_at
+			END,
 			updated_at = NOW()
 	`, settings.Enabled, settings.MinSavingsPercent, settings.MinMonthlySavings,
 		settings.RequireConsecutive, settings.GPUPRsEnabled, settings.GPUMinSavingsPercent,
-		excludeReposJSON, excludePatternsJSON)
+		excludeReposJSON, excludePatternsJSON, settings.GitHubToken)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -442,46 +456,48 @@ func (s *Server) approvePRRecommendation(c *gin.Context) {
 		return
 	}
 
-	// Try to create a PR via GitHub API
-	prURL := ""
-	prNumber := 0
-
-	ghClient, err := s.getGitHubClient()
-	if err == nil {
-		prResult, err := ghClient.CreateRunnerRightSizePR(ctx, ghlib.PROptions{
-			Repository:       rec.Repository,
-			JobID:            rec.JobID,
-			WorkflowFile:     rec.WorkflowFile,
-			CurrentLabel:     rec.CurrentLabel,
-			NewLabel:         rec.RecommendedLabel,
-			CurrentVCPUs:     rec.CurrentVCPUs,
-			CurrentMemoryGiB: rec.CurrentMemoryGiB,
-			NewVCPUs:         rec.RecommendedVCPUs,
-			NewMemoryGiB:     rec.RecommendedMemoryGiB,
-			P95CPU:           rec.P95CPUPercent,
-			P95Memory:        rec.P95MemPercent,
-			RunCount:         rec.RunCount,
-			MonthlySavings:   rec.MonthlySavingsUSD,
-			SavingsPercent:   rec.SavingsPercent,
-			ConsecutiveRuns:  rec.ConsecutiveUnderutilized,
+	// Resolve GitHub token: DB setting takes precedence over env var.
+	ghClient, err := s.getGitHubClient(ctx)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": "No GitHub token configured. Add a Personal Access Token (with 'contents' and 'pull_requests' scopes) in the Auto PR → Settings tab.",
 		})
-		if err != nil {
-			// Log the error but don't fail - still mark as approved
-			fmt.Printf("warning: failed to create PR for recommendation %s: %v\n", id, err)
-		} else {
-			prURL = prResult.PRURL
-			prNumber = prResult.PRNumber
-
-			// Also insert into PR history
-			s.db.ExecContext(ctx, `
-				INSERT INTO pr_history (id, recommendation_id, team_id, repository, job_id, 
-				                        pr_number, pr_url, old_label, new_label, 
-				                        savings_percent, monthly_savings_usd, is_gpu_job, status)
-				VALUES ($1, $2, (SELECT team_id FROM pr_recommendations WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open')
-			`, uuid.New().String(), id, rec.Repository, rec.JobID, prNumber, prURL,
-				rec.CurrentLabel, rec.RecommendedLabel, rec.SavingsPercent, rec.MonthlySavingsUSD, rec.IsGPUJob)
-		}
+		return
 	}
+
+	prResult, prErr := ghClient.CreateRunnerRightSizePR(ctx, ghlib.PROptions{
+		Repository:       rec.Repository,
+		JobID:            rec.JobID,
+		WorkflowFile:     rec.WorkflowFile,
+		CurrentLabel:     rec.CurrentLabel,
+		NewLabel:         rec.RecommendedLabel,
+		CurrentVCPUs:     rec.CurrentVCPUs,
+		CurrentMemoryGiB: rec.CurrentMemoryGiB,
+		NewVCPUs:         rec.RecommendedVCPUs,
+		NewMemoryGiB:     rec.RecommendedMemoryGiB,
+		P95CPU:           rec.P95CPUPercent,
+		P95Memory:        rec.P95MemPercent,
+		RunCount:         rec.RunCount,
+		MonthlySavings:   rec.MonthlySavingsUSD,
+		SavingsPercent:   rec.SavingsPercent,
+		ConsecutiveRuns:  rec.ConsecutiveUnderutilized,
+	})
+	if prErr != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "GitHub PR creation failed: " + prErr.Error()})
+		return
+	}
+
+	prURL := prResult.PRURL
+	prNumber := prResult.PRNumber
+
+	// Record in PR history
+	s.db.ExecContext(ctx, `
+		INSERT INTO pr_history (id, recommendation_id, team_id, repository, job_id,
+		                        pr_number, pr_url, old_label, new_label,
+		                        savings_percent, monthly_savings_usd, is_gpu_job, status)
+		VALUES ($1, $2, (SELECT team_id FROM pr_recommendations WHERE id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open')
+	`, uuid.New().String(), id, rec.Repository, rec.JobID, prNumber, prURL,
+		rec.CurrentLabel, rec.RecommendedLabel, rec.SavingsPercent, rec.MonthlySavingsUSD, rec.IsGPUJob)
 
 	// Update the recommendation status
 	_, err = s.db.ExecContext(ctx, `
@@ -738,8 +754,79 @@ func (s *Server) listPRHistory(c *gin.Context) {
 }
 
 // getGitHubClient returns a GitHub API client if GITHUB_TOKEN is set
-func (s *Server) getGitHubClient() (*ghlib.Client, error) {
-	return ghlib.New()
+// getGitHubClient returns a GitHub API client.  It first checks the
+// auto_pr_settings table for a stored token (takes precedence), then falls
+// back to the GITHUB_TOKEN environment variable.
+func (s *Server) getGitHubClient(ctx context.Context) (*ghlib.Client, error) {
+	var dbToken string
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(github_token, '') FROM auto_pr_settings LIMIT 1`,
+	).Scan(&dbToken)
+	if dbToken != "" {
+		return ghlib.NewWithToken(dbToken), nil
+	}
+	return ghlib.New() // falls back to GITHUB_TOKEN env var
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// BACKGROUND AUTO-PR WORKER
+// ══════════════════════════════════════════════════════════════════════════════
+
+// autoPRWorkerInterval is how often the worker scans for underutilised jobs.
+// Keeping it coarse means the cost is O(distinct job+repo pairs active in the
+// window) rather than O(total job insertions), so it stays cheap even at tens
+// of thousands of runs per day.
+const autoPRWorkerInterval = 15 * time.Minute
+
+// startAutoPRWorker runs until ctx is cancelled.  It should be launched as a
+// goroutine from Server.Run so it shares the server lifetime.
+func (s *Server) startAutoPRWorker(ctx context.Context) {
+	ticker := time.NewTicker(autoPRWorkerInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.runAutoPRBatch(ctx)
+		}
+	}
+}
+
+// runAutoPRBatch finds every distinct (job_id, repository) pair that received
+// at least one completed run in the last tick window plus a small overlap, then
+// calls checkAutoPRCandidate for each pair.
+//
+// At 40 k jobs/day with 200 unique pairs this produces ~200 lightweight DB
+// round-trips per tick rather than 40 k goroutines.
+func (s *Server) runAutoPRBatch(ctx context.Context) {
+	// Slightly wider than the ticker interval to tolerate clock skew /
+	// slow inserts right at the boundary.
+	lookback := autoPRWorkerInterval + time.Minute
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT job_id, COALESCE(repository, '')
+		FROM jobs
+		WHERE status    = 'completed'
+		  AND created_at > NOW() - $1::interval
+	`, lookback.String())
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type pair struct{ jobID, repo string }
+	var pairs []pair
+	for rows.Next() {
+		var p pair
+		if rows.Scan(&p.jobID, &p.repo) == nil {
+			pairs = append(pairs, p)
+		}
+	}
+
+	for _, p := range pairs {
+		s.checkAutoPRCandidate(p.jobID, p.repo)
+	}
 }
 
 // checkAutoPRCandidate is called after each completed job insertion.
