@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"crypto/rsa"
-	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
@@ -841,62 +840,6 @@ func (s *Server) ssoTestConfig(c *gin.Context) {
 func generateState() string {
 	token, _ := generateSessionToken()
 	return token[:16]
-}
-
-// --- SSO-aware auth middleware ---
-
-// ssoAuthMiddleware checks both API key auth and SSO session.
-func (s *Server) ssoAuthMiddleware(apiKey string, disableAuth bool) gin.HandlerFunc {
-	apiKeyHash := hashAPIKey(apiKey)
-	return func(c *gin.Context) {
-		// If auth is disabled, set a dev user and skip
-		if disableAuth {
-			c.Set("user_email", "dev@runright.io")
-			c.Set("sso_email", "dev@runright.io")
-			c.Next()
-			return
-		}
-
-		// Check API key auth first (for backward compatibility)
-		if apiKey != "" {
-			// Check HttpOnly cookie
-			if token, err := c.Cookie(sessionCookie); err == nil {
-				sessionStoreMu.RLock()
-				storedHash, exists := sessionStore[token]
-				sessionStoreMu.RUnlock()
-				if exists && subtle.ConstantTimeCompare([]byte(storedHash), []byte(apiKeyHash)) == 1 {
-					c.Next()
-					return
-				}
-			}
-
-			// Check Bearer token
-			authHeader := c.GetHeader("Authorization")
-			if strings.HasPrefix(authHeader, "Bearer ") {
-				providedKey := strings.TrimPrefix(authHeader, "Bearer ")
-				if subtle.ConstantTimeCompare([]byte(providedKey), []byte(apiKey)) == 1 {
-					c.Next()
-					return
-				}
-			}
-		}
-
-		// Check SSO session
-		if token, err := c.Cookie(sessionCookie); err == nil {
-			sess, err := s.validateSSOSession(c.Request.Context(), token)
-			if err == nil && sess != nil {
-				// Set user info in context
-				c.Set("sso_user_id", sess.UserID)
-				c.Set("sso_email", sess.Email)
-				c.Set("user_email", sess.Email) // Also set user_email for assistant tools
-				c.Set("sso_provider", sess.Provider)
-				c.Next()
-				return
-			}
-		}
-
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-	}
 }
 
 // listUsers returns all users from sso_users so admins can see who has logged in and manage their roles.

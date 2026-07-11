@@ -1234,9 +1234,8 @@ function AuditTab() {
               <div className={`w-2 h-2 rounded-full mt-2 ${log.status === 'success' ? 'bg-green-500' : 'bg-red-500'}`} />
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-[var(--text)]">
-                  <span className="font-medium">{log.actor_email}</span>
-                  {' '}{formatAction(log.action)}{' '}
-                  {log.resource_name && <span className="font-medium">{log.resource_name}</span>}
+                  <span className="font-medium">{log.actor_email === 'system' ? 'System' : log.actor_email}</span>
+                  {' '}{formatAuditEntry(log)}
                 </div>
                 <div className="text-xs text-[var(--text-light)]">
                   {new Date(log.created_at).toLocaleString()}
@@ -1292,9 +1291,14 @@ function EmptyState({ icon, message, action }: { icon: React.ReactNode; message:
   )
 }
 
-function formatAction(action: string): string {
+function formatAuditEntry(log: AuditLog): string {
+  const { action, resource_type, resource_name } = log
+  
+  // Parse action like "alert.rule.create" or "notifications.settings.update"
   const parts = action.split('.')
-  const verb = parts[1] || parts[0]
+  const verb = parts[parts.length - 1] // last part is usually the verb
+  
+  // Map verbs to past tense
   const verbMap: Record<string, string> = {
     create: 'created',
     update: 'updated',
@@ -1304,8 +1308,74 @@ function formatAction(action: string): string {
     remove: 'removed',
     export: 'exported',
     run: 'ran',
+    upsert: 'updated',
+    assign: 'assigned',
+    unassign: 'unassigned',
   }
-  return verbMap[verb] || verb
+  const pastVerb = verbMap[verb] || verb
+  
+  // Build human-readable resource type
+  const typeMap: Record<string, string> = {
+    'alert': 'alert rule',
+    'alert_rule': 'alert rule',
+    'policy': 'policy',
+    'policy_rule': 'policy rule',
+    'role': 'role',
+    'user': 'user',
+    'apikey': 'API key',
+    'api_key': 'API key',
+    'team': 'team',
+    'team_member': 'team member',
+    'sso': 'SSO configuration',
+    'sso_provider': 'SSO provider',
+    'notification': 'notification settings',
+    'notifications': 'notification settings',
+    'settings': 'settings',
+    'ownership': 'repository ownership',
+    'repository_ownership': 'repository ownership',
+    'job': 'job',
+    'label': 'label mapping',
+    'label_mapping': 'label mapping',
+  }
+  
+  // Try to determine the resource type from action parts or resource_type field
+  let displayType = resource_type ? typeMap[resource_type] || resource_type : ''
+  
+  // If resource_type isn't helpful, parse from action
+  if (!displayType || displayType === resource_type) {
+    // Check for patterns like "alert.rule.create" or "notifications.settings.update"
+    if (parts.length >= 2) {
+      const category = parts[0]
+      const subtype = parts[1]
+      
+      if (category === 'alert' && subtype === 'rule') {
+        displayType = 'alert rule'
+      } else if (category === 'notifications' && subtype === 'settings') {
+        displayType = 'notification settings'
+      } else if (category === 'policy' && subtype === 'rule') {
+        displayType = 'policy rule'
+      } else if (category === 'api' && subtype === 'key') {
+        displayType = 'API key'
+      } else if (category === 'repository' && subtype === 'ownership') {
+        displayType = 'repository ownership'
+      } else if (category === 'job' && subtype === 'meta') {
+        displayType = 'job metadata'
+      } else if (category === 'user' && subtype === 'role') {
+        displayType = 'user role'
+      } else {
+        displayType = typeMap[category] || category
+      }
+    }
+  }
+  
+  // Build final message
+  if (resource_name) {
+    return `${pastVerb} ${displayType} "${resource_name}"`
+  } else if (displayType) {
+    return `${pastVerb} ${displayType}`
+  } else {
+    return pastVerb
+  }
 }
 
 // Icons

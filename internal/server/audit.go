@@ -13,19 +13,19 @@ import (
 
 // AuditLog represents an audit log entry.
 type AuditLog struct {
-	ID            string                 `json:"id"`
-	TeamID        string                 `json:"team_id,omitempty"`
-	ActorEmail    string                 `json:"actor_email"`
-	ActorIP       string                 `json:"actor_ip,omitempty"`
-	ActorUA       string                 `json:"actor_user_agent,omitempty"`
-	Action        string                 `json:"action"`
-	ResourceType  string                 `json:"resource_type"`
-	ResourceID    string                 `json:"resource_id,omitempty"`
-	ResourceName  string                 `json:"resource_name,omitempty"`
-	Details       map[string]any `json:"details,omitempty"`
-	Status        string                 `json:"status"`
-	ErrorMessage  string                 `json:"error_message,omitempty"`
-	CreatedAt     time.Time              `json:"created_at"`
+	ID           string         `json:"id"`
+	TeamID       string         `json:"team_id,omitempty"`
+	ActorEmail   string         `json:"actor_email"`
+	ActorIP      string         `json:"actor_ip,omitempty"`
+	ActorUA      string         `json:"actor_user_agent,omitempty"`
+	Action       string         `json:"action"`
+	ResourceType string         `json:"resource_type"`
+	ResourceID   string         `json:"resource_id,omitempty"`
+	ResourceName string         `json:"resource_name,omitempty"`
+	Details      map[string]any `json:"details,omitempty"`
+	Status       string         `json:"status"`
+	ErrorMessage string         `json:"error_message,omitempty"`
+	CreatedAt    time.Time      `json:"created_at"`
 }
 
 // logAudit records an audit log entry.
@@ -175,12 +175,12 @@ func (s *Server) getAuditLog(c *gin.Context) {
 	var log AuditLog
 	var teamID, actorIP, actorUA, resourceID, resourceName, errorMessage sql.NullString
 	var details []byte
-	
+
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, team_id, actor_email, actor_ip, actor_user_agent, action, resource_type, resource_id, resource_name, details, status, error_message, created_at
 		FROM audit_logs WHERE id = $1
 	`, logID).Scan(&log.ID, &teamID, &log.ActorEmail, &actorIP, &actorUA, &log.Action, &log.ResourceType, &resourceID, &resourceName, &details, &log.Status, &errorMessage, &log.CreatedAt)
-	
+
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "audit log not found"})
 		return

@@ -640,7 +640,10 @@ func (s *Server) runReportNow(c *gin.Context) {
 		UPDATE scheduled_reports SET last_run_at = NOW() WHERE id = $1
 	`, reportID)
 
-	s.logAudit(ctx, userEmail, c, "report.run", "scheduled_report", reportID, "", nil)
+	s.logAudit(ctx, userEmail, c, "report.run", "scheduled_report", reportID, "", map[string]any{
+		"team_id":     report.TeamID,
+		"report_type": report.ReportType,
+	})
 	c.JSON(http.StatusOK, gin.H{"run_id": runID, "status": "completed"})
 }
 

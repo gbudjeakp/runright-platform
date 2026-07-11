@@ -22,6 +22,7 @@ import (
 	"github.com/sgbudje/runright-platform/internal/assistant"
 	"github.com/sgbudje/runright-platform/internal/catalog"
 	"github.com/sgbudje/runright-platform/internal/embeddings"
+	"github.com/sgbudje/runright-platform/internal/notification"
 	"github.com/sgbudje/runright-platform/internal/types"
 )
 
@@ -1581,7 +1582,7 @@ func (s *Server) sendNotificationTest(c *gin.Context) {
 	}
 
 	msg := fmt.Sprintf(":bell: RunRight test notification at %s", time.Now().UTC().Format(time.RFC3339))
-	failures := 0
+	var results []notification.DeliveryResult
 	for _, destination := range settings.Slack.Destinations {
 		webhook := secrets[destination.ID]
 		if webhook == "" {
@@ -1591,7 +1592,22 @@ func (s *Server) sendNotificationTest(c *gin.Context) {
 		if destination.Mention != "" {
 			text = destination.Mention + " " + text
 		}
+		result := notification.DeliveryResult{
+			DestinationID: destination.ID,
+			Channel:       "slack",
+			Status:        "success",
+		}
 		if err := postSlackWebhook(c.Request.Context(), webhook, text); err != nil {
+			result.Status = "failed"
+			result.Error = err.Error()
+		}
+		results = append(results, result)
+		s.writeDeliveryLog(c.Request.Context(), result, "test", "test")
+	}
+
+	failures := 0
+	for _, r := range results {
+		if r.Status == "failed" {
 			failures++
 		}
 	}
@@ -1968,14 +1984,17 @@ func (s *Server) upsertPolicy(c *gin.Context) {
 
 // deletePolicy removes a policy rule for a repository/job scope.
 func (s *Server) deletePolicy(c *gin.Context) {
+	ctx := c.Request.Context()
+	userEmail := getUserEmail(c)
 	repository := c.Query("repository")
 	jobID := c.Query("job_id")
-	_, err := s.db.ExecContext(c.Request.Context(), `DELETE FROM policy_rules WHERE repository = $1 AND job_id = $2`, repository, jobID)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM policy_rules WHERE repository = $1 AND job_id = $2`, repository, jobID)
 	if err != nil {
+		s.logAuditError(ctx, userEmail, c, "policy.delete", "policy", repository+"/"+jobID, err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	s.logAudit(c.Request.Context(), getUserEmail(c), c, "policy.delete", "policy",
+	s.logAudit(ctx, userEmail, c, "policy.delete", "policy",
 		repository+"/"+jobID, repository, map[string]any{"job_id": jobID})
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
@@ -2436,6 +2455,17 @@ func (s *Server) authMiddleware(apiKey string, disableAuth bool) gin.HandlerFunc
 			if exists && subtle.ConstantTimeCompare([]byte(storedHash), []byte(apiKeyHash)) == 1 {
 				c.Next()
 				return
+			}
+			// 1b. SSO session (if SSO is configured).
+			if s.ssoMgr != nil {
+				if sess, err := s.validateSSOSession(c.Request.Context(), token); err == nil && sess != nil {
+					c.Set("sso_user_id", sess.UserID)
+					c.Set("sso_email", sess.Email)
+					c.Set("user_email", sess.Email)
+					c.Set("sso_provider", sess.Provider)
+					c.Next()
+					return
+				}
 			}
 		}
 		// 2. Bearer token — static key first, then DB-issued keys.

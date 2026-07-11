@@ -71,8 +71,8 @@ func (s *Server) buildNotificationDispatcher(ctx context.Context) (*notification
 			continue
 		}
 		destinations[d.ID] = notification.Destination{
-			ID:   d.ID,
-			Name: d.Name,
+			ID:      d.ID,
+			Name:    d.Name,
 			Channel: &notification.TeamsChannel{WebhookURL: url},
 		}
 	}
@@ -82,8 +82,8 @@ func (s *Server) buildNotificationDispatcher(ctx context.Context) (*notification
 			continue
 		}
 		destinations[d.ID] = notification.Destination{
-			ID:   d.ID,
-			Name: d.Name,
+			ID:      d.ID,
+			Name:    d.Name,
 			Channel: &notification.WebhookChannel{URL: url, Headers: d.Headers},
 		}
 	}

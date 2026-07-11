@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/sgbudje/runright-platform/internal/types"
@@ -327,9 +328,10 @@ func (p *anthropicProvider) Chat(ctx context.Context, req ChatCompletionRequest,
 		for _, c := range content {
 			cMap := c.(map[string]interface{})
 			cType, _ := cMap["type"].(string)
-			if cType == "tool_use" {
+			switch cType {
+			case "tool_use":
 				toolUses = append(toolUses, cMap)
-			} else if cType == "text" {
+			case "text":
 				text, _ := cMap["text"].(string)
 				textParts = append(textParts, text)
 			}
@@ -482,10 +484,23 @@ func (p *ollamaProvider) Chat(ctx context.Context, req ChatCompletionRequest, ex
 		content, _ := message["content"].(string)
 		toolCalls, hasToolCalls := message["tool_calls"].([]interface{})
 
-		// Fallback: Some models output JSON-formatted function calls in content
+		// Check if tool_calls have empty arguments (Ollama bug - sometimes returns
+		// tool_calls with empty args but puts real args in content text)
+		shouldFallback := !hasToolCalls || len(toolCalls) == 0
+		if hasToolCalls && len(toolCalls) > 0 {
+			// Check if arguments are empty
+			tc := toolCalls[0].(map[string]interface{})
+			if fn, ok := tc["function"].(map[string]interface{}); ok {
+				if args, ok := fn["arguments"].(map[string]interface{}); ok && len(args) == 0 {
+					shouldFallback = true
+				}
+			}
+		}
+
+		// Fallback: Some models output function calls in content as JSON or text
 		// instead of using the tool_calls field. Parse and convert them.
-		if (!hasToolCalls || len(toolCalls) == 0) && strings.TrimSpace(content) != "" {
-			if parsed := parseJSONFunctionCall(content); parsed != nil {
+		if shouldFallback && strings.TrimSpace(content) != "" {
+			if parsed := parseFunctionCall(content); parsed != nil {
 				toolCalls = []interface{}{parsed}
 				hasToolCalls = true
 			}
@@ -503,7 +518,14 @@ func (p *ollamaProvider) Chat(ctx context.Context, req ChatCompletionRequest, ex
 			tcMap := tc.(map[string]interface{})
 			fn, _ := tcMap["function"].(map[string]interface{})
 			fnName, _ := fn["name"].(string)
-			fnArgs, _ := json.Marshal(fn["arguments"])
+			fnArgsRaw := fn["arguments"]
+			// Ollama sometimes wraps arguments in {"object": {...}} - unwrap if present
+			if argsMap, ok := fnArgsRaw.(map[string]interface{}); ok {
+				if obj, hasObj := argsMap["object"].(map[string]interface{}); hasObj {
+					fnArgsRaw = obj
+				}
+			}
+			fnArgs, _ := json.Marshal(fnArgsRaw)
 
 			toolCall := ToolCall{
 				ID:        fmt.Sprintf("ollama-%d-%s", iteration, fnName),
@@ -531,6 +553,25 @@ func (p *ollamaProvider) Chat(ctx context.Context, req ChatCompletionRequest, ex
 	return "", fmt.Errorf("max tool iterations exceeded")
 }
 
+// parseFunctionCall attempts to parse a function call from various content formats.
+// Returns nil if no valid function call is found.
+func parseFunctionCall(content string) map[string]interface{} {
+	content = strings.TrimSpace(content)
+	
+	// Try JSON parsing first
+	if result := parseJSONFunctionCall(content); result != nil {
+		return result
+	}
+	
+	// Try text format: [CALLS function_name with: key=value, key="value"]
+	// or: [CALLS function_name immediately with: key=value]
+	if result := parseTextFunctionCall(content); result != nil {
+		return result
+	}
+	
+	return nil
+}
+
 // parseJSONFunctionCall attempts to parse a JSON-formatted function call from content.
 // Some models output function calls as JSON text instead of using the tool_calls field.
 // Supports formats like:
@@ -548,11 +589,17 @@ func parseJSONFunctionCall(content string) map[string]interface{} {
 		return nil
 	}
 
-	// Format 1: {"function": "name", "args": {...}}
+	// Format 1: {"function": "name", "args": {...}} or {"function": "name", "parameters": {...}}
 	if fnName, ok := parsed["function"].(string); ok {
 		args := parsed["args"]
 		if args == nil {
 			args = parsed["arguments"]
+		}
+		if args == nil {
+			args = parsed["parameters"]
+		}
+		if args == nil {
+			args = parsed["params"]
 		}
 		if args == nil {
 			args = map[string]interface{}{}
@@ -565,11 +612,17 @@ func parseJSONFunctionCall(content string) map[string]interface{} {
 		}
 	}
 
-	// Format 2: {"name": "func_name", "arguments": {...}}
+	// Format 2: {"name": "func_name", "arguments": {...}} or {"name": "func_name", "parameters": {...}}
 	if fnName, ok := parsed["name"].(string); ok {
 		args := parsed["arguments"]
 		if args == nil {
 			args = parsed["args"]
+		}
+		if args == nil {
+			args = parsed["parameters"]
+		}
+		if args == nil {
+			args = parsed["params"]
 		}
 		if args == nil {
 			args = map[string]interface{}{}
@@ -590,4 +643,213 @@ func parseJSONFunctionCall(content string) map[string]interface{} {
 	}
 
 	return nil
+}
+
+// parseTextFunctionCall parses text-formatted function calls like:
+// [CALLS create_alert_rule with: name="test", threshold=90]
+// [CALLS create_alert_rule immediately with: name="test"]
+// *calls create_alert_rule*
+// *calls create_alert_rule with name="test"*
+func parseTextFunctionCall(content string) map[string]interface{} {
+	content = strings.TrimSpace(content)
+	
+	// Try [CALLS ...] format first
+	if result := parseBracketCalls(content); result != nil {
+		return result
+	}
+	
+	// Try *calls ...* format (asterisk-wrapped)
+	if result := parseAsteriskCalls(content); result != nil {
+		return result
+	}
+	
+	return nil
+}
+
+// parseBracketCalls handles [CALLS function_name ...] format
+func parseBracketCalls(content string) map[string]interface{} {
+	callsIdx := strings.Index(strings.ToUpper(content), "[CALLS ")
+	if callsIdx == -1 {
+		return nil
+	}
+	
+	closeIdx := strings.Index(content[callsIdx:], "]")
+	if closeIdx == -1 {
+		return nil
+	}
+	
+	callContent := content[callsIdx+7 : callsIdx+closeIdx]
+	return parseCallContent(callContent)
+}
+
+// parseAsteriskCalls handles *calls function_name* format
+// It finds all *calls ...* patterns and returns the one with arguments (preferring calls with args)
+func parseAsteriskCalls(content string) map[string]interface{} {
+	lower := strings.ToLower(content)
+	
+	var bestResult map[string]interface{}
+	var bestArgCount int
+	
+	// Find all "*calls " patterns
+	searchStart := 0
+	for {
+		callsIdx := strings.Index(lower[searchStart:], "*calls ")
+		if callsIdx == -1 {
+			break
+		}
+		callsIdx += searchStart
+		
+		// Find the closing asterisk or end of line
+		startContent := callsIdx + 7
+		closeIdx := strings.Index(content[startContent:], "*")
+		if closeIdx == -1 {
+			closeIdx = strings.Index(content[startContent:], "\n")
+			if closeIdx == -1 {
+				closeIdx = len(content) - startContent
+			}
+		}
+		
+		callContent := content[startContent : startContent+closeIdx]
+		result := parseCallContent(callContent)
+		
+		if result != nil {
+			// Count arguments
+			argCount := 0
+			if fn, ok := result["function"].(map[string]interface{}); ok {
+				if args, ok := fn["arguments"].(map[string]interface{}); ok {
+					argCount = len(args)
+				}
+			}
+			
+			// Prefer the call with the most arguments
+			if bestResult == nil || argCount > bestArgCount {
+				bestResult = result
+				bestArgCount = argCount
+			}
+		}
+		
+		searchStart = startContent + closeIdx + 1
+		if searchStart >= len(content) {
+			break
+		}
+	}
+	
+	return bestResult
+}
+
+// parseCallContent extracts function name and args from various formats:
+// - "function_name with: key=value, key=value"
+// - "function_name(key=value, key=value)"
+// - "function_name(key=\"value\")"
+func parseCallContent(callContent string) map[string]interface{} {
+	callContent = strings.TrimSpace(callContent)
+	
+	// Remove "immediately" if present
+	callContent = strings.Replace(callContent, " immediately", "", 1)
+	
+	var funcName string
+	var argsStr string
+	
+	// Check for parentheses format first: function_name(args)
+	if parenIdx := strings.Index(callContent, "("); parenIdx != -1 {
+		funcName = strings.TrimSpace(callContent[:parenIdx])
+		// Find matching closing paren
+		closeIdx := strings.LastIndex(callContent, ")")
+		if closeIdx > parenIdx {
+			argsStr = callContent[parenIdx+1 : closeIdx]
+		} else {
+			argsStr = callContent[parenIdx+1:]
+		}
+	} else if idx := strings.Index(strings.ToLower(callContent), " with:"); idx != -1 {
+		// "with:" format
+		funcName = strings.TrimSpace(callContent[:idx])
+		argsStr = strings.TrimSpace(callContent[idx+6:])
+	} else if idx := strings.Index(strings.ToLower(callContent), " with "); idx != -1 {
+		// "with " format  
+		funcName = strings.TrimSpace(callContent[:idx])
+		argsStr = strings.TrimSpace(callContent[idx+6:])
+	} else {
+		// Just function name, no args
+		funcName = callContent
+	}
+	
+	if funcName == "" {
+		return nil
+	}
+	
+	args := map[string]interface{}{}
+	if argsStr != "" {
+		args = parseKeyValueArgs(argsStr)
+	}
+	
+	return map[string]interface{}{
+		"function": map[string]interface{}{
+			"name":      funcName,
+			"arguments": args,
+		},
+	}
+}
+
+// parseKeyValueArgs parses "key=value, key=\"value\", key=123" format
+func parseKeyValueArgs(s string) map[string]interface{} {
+	args := map[string]interface{}{}
+	
+	// Simple regex-free parsing
+	// Split by comma, but be careful with quoted strings
+	var current strings.Builder
+	inQuote := false
+	quoteChar := rune(0)
+	pairs := []string{}
+	
+	for _, ch := range s {
+		if !inQuote && (ch == '"' || ch == '\'') {
+			inQuote = true
+			quoteChar = ch
+			current.WriteRune(ch)
+		} else if inQuote && ch == quoteChar {
+			inQuote = false
+			current.WriteRune(ch)
+		} else if !inQuote && ch == ',' {
+			pairs = append(pairs, current.String())
+			current.Reset()
+		} else {
+			current.WriteRune(ch)
+		}
+	}
+	if current.Len() > 0 {
+		pairs = append(pairs, current.String())
+	}
+	
+	for _, pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		eqIdx := strings.Index(pair, "=")
+		if eqIdx == -1 {
+			continue
+		}
+		
+		key := strings.TrimSpace(pair[:eqIdx])
+		val := strings.TrimSpace(pair[eqIdx+1:])
+		
+		// Remove quotes from value
+		if len(val) >= 2 {
+			if (val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'') {
+				val = val[1 : len(val)-1]
+			}
+		}
+		
+		// Try to parse as number
+		if i, err := strconv.ParseInt(val, 10, 64); err == nil {
+			args[key] = i
+		} else if f, err := strconv.ParseFloat(val, 64); err == nil {
+			args[key] = f
+		} else if val == "true" {
+			args[key] = true
+		} else if val == "false" {
+			args[key] = false
+		} else {
+			args[key] = val
+		}
+	}
+	
+	return args
 }

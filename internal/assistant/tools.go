@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -575,6 +576,37 @@ func (a *Assistant) AvailableTools() []Tool {
 				"required": []string{"label"},
 			},
 		},
+		// === Cost Analysis Tools ===
+		{
+			Name:        "get_repository_costs",
+			Description: "Get cost breakdown by repository to find the most expensive repos. Use this when the user asks about 'most expensive', 'highest cost', or 'top spending' repositories.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"limit": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of top repos to return (default 10)",
+					},
+				},
+			},
+		},
+		{
+			Name:        "get_recommendations",
+			Description: "Get RunRight's specific machine recommendations for a repository. ALWAYS use this when the user asks 'how to save', 'how to reduce costs', 'what can we do', or 'what are the recommendations'. Returns specific machine switches with savings amounts.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"repository": map[string]interface{}{
+						"type":        "string",
+						"description": "Repository to get recommendations for (e.g., 'runrightio/ml-platform')",
+					},
+					"limit": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of recommendations to return (default 10)",
+					},
+				},
+			},
+		},
 		// === Audit Log Tools ===
 		{
 			Name:        "search_audit_logs",
@@ -626,7 +658,7 @@ func (a *Assistant) ExecuteTool(ctx context.Context, call ToolCall, userID, conv
 
 	var err error
 	switch call.Name {
-	case "create_alert_rule":
+	case "create_alert_rule", "create_alert":
 		result.Result, err = a.executeCreateAlertRule(ctx, call.Arguments)
 	case "create_policy":
 		result.Result, err = a.executeCreatePolicy(ctx, call.Arguments)
@@ -684,6 +716,11 @@ func (a *Assistant) ExecuteTool(ctx context.Context, call ToolCall, userID, conv
 		result.Result, err = a.executeListLabels(ctx, call.Arguments)
 	case "delete_label":
 		result.Result, err = a.executeDeleteLabel(ctx, call.Arguments)
+	// Cost Analysis
+	case "get_repository_costs":
+		result.Result, err = a.executeGetRepositoryCosts(ctx, call.Arguments)
+	case "get_recommendations":
+		result.Result, err = a.executeGetRecommendations(ctx, call.Arguments)
 	// Audit Logs
 	case "search_audit_logs":
 		result.Result, err = a.executeSearchAuditLogs(ctx, call.Arguments)
@@ -717,17 +754,132 @@ func (a *Assistant) ExecuteTool(ctx context.Context, call ToolCall, userID, conv
 // Tool execution implementations
 
 func (a *Assistant) executeCreateAlertRule(ctx context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		Name          string  `json:"name"`
-		Repository    string  `json:"repository"`
-		JobID         string  `json:"job_id"`
-		ConditionType string  `json:"condition_type"`
-		Threshold     float64 `json:"threshold"`
-		Channel       string  `json:"channel"`
-		Destination   string  `json:"destination"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
+	// Parse into map first to handle different field name variations
+	var rawParams map[string]interface{}
+	if err := json.Unmarshal(args, &rawParams); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	
+	// Helper to get string from map with fallback keys
+	getString := func(keys ...string) string {
+		for _, k := range keys {
+			if v, ok := rawParams[k].(string); ok && v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	
+	// Helper to get float from map with fallback keys
+	getFloat := func(keys ...string) float64 {
+		for _, k := range keys {
+			if v, ok := rawParams[k].(float64); ok {
+				return v
+			}
+			// Also handle string numbers
+			if v, ok := rawParams[k].(string); ok {
+				if f, err := strconv.ParseFloat(v, 64); err == nil {
+					return f
+				}
+			}
+		}
+		return 0
+	}
+	
+	// Extract params with fallback field names
+	params := struct {
+		Name          string
+		Repository    string
+		JobID         string
+		ConditionType string
+		Threshold     float64
+		Channel       string
+		Destination   string
+	}{
+		Name:          getString("name", "alert_name", "alertName"),
+		Repository:    getString("repository", "repo"),
+		JobID:         getString("job_id", "jobId", "job"),
+		ConditionType: getString("condition_type", "conditionType", "type"),
+		Threshold:     getFloat("threshold", "max_cost_per_hour", "min_waste_percent", "threshold_value"),
+		Channel:       getString("channel", "notification_channel"),
+		Destination:   getString("destination", "notification_destinations", "dest"),
+	}
+
+	// Infer condition_type from which parameters were used
+	if params.ConditionType == "" {
+		// Check alert_type, condition, or trigger_type field
+		alertType := ""
+		for _, key := range []string{"alert_type", "condition", "trigger_type", "type"} {
+			if at, ok := rawParams[key].(string); ok && at != "" {
+				alertType = at
+				break
+			}
+		}
+		if alertType != "" {
+			alertTypeLower := strings.ToLower(alertType)
+			if strings.Contains(alertTypeLower, "cost") {
+				params.ConditionType = "cost"
+			} else if strings.Contains(alertTypeLower, "waste") {
+				params.ConditionType = "waste"
+			} else if strings.Contains(alertTypeLower, "cpu") {
+				params.ConditionType = "cpu"
+			} else if strings.Contains(alertTypeLower, "memory") {
+				params.ConditionType = "memory"
+			}
+		}
+		// Also check threshold field names
+		if params.ConditionType == "" {
+			if rawParams["max_cost_per_hour"] != nil {
+				params.ConditionType = "cost"
+			} else if rawParams["min_waste_percent"] != nil {
+				params.ConditionType = "waste"
+			}
+		}
+	}
+
+	// Normalize condition_type to match DB constraint
+	conditionMap := map[string]string{
+		"waste":              "waste_threshold",
+		"waste_threshold":    "waste_threshold",
+		"high_waste":         "waste_threshold",
+		"cost":               "cost_threshold",
+		"cost_threshold":     "cost_threshold",
+		"high_cost":          "cost_threshold",
+		"cpu":                "cpu_threshold",
+		"cpu_threshold":      "cpu_threshold",
+		"high_cpu":           "cpu_threshold",
+		"memory":             "memory_threshold",
+		"memory_threshold":   "memory_threshold",
+		"high_memory":        "memory_threshold",
+		"gpu":                "gpu_threshold",
+		"gpu_threshold":      "gpu_threshold",
+		"high_gpu":           "gpu_threshold",
+		"duration":           "duration_threshold",
+		"duration_threshold": "duration_threshold",
+		"long_duration":      "duration_threshold",
+	}
+	if normalized, ok := conditionMap[strings.ToLower(params.ConditionType)]; ok {
+		params.ConditionType = normalized
+	} else if params.ConditionType == "" || strings.Contains(strings.ToLower(params.ConditionType), "waste") {
+		params.ConditionType = "waste_threshold" // default to waste
+	} else if strings.Contains(strings.ToLower(params.ConditionType), "cost") {
+		params.ConditionType = "cost_threshold"
+	} else {
+		params.ConditionType = "waste_threshold" // fallback default
+	}
+
+	// Validate required fields
+	if params.Name == "" {
+		return "", fmt.Errorf("name is required - please specify a name for the alert")
+	}
+
+	// Check if alert with same name already exists
+	var existingID string
+	err := a.db.QueryRowContext(ctx, "SELECT id FROM alert_rules WHERE name = $1", params.Name).Scan(&existingID)
+	if err == nil {
+		return fmt.Sprintf("Alert '%s' already exists", params.Name), nil
+	} else if err != sql.ErrNoRows {
+		return "", fmt.Errorf("failed to check existing alert: %w", err)
 	}
 
 	// Apply sensible defaults
@@ -741,7 +893,7 @@ func (a *Assistant) executeCreateAlertRule(ctx context.Context, args json.RawMes
 	id := uuid.New().String()
 	
 	// Insert the alert rule
-	_, err := a.db.ExecContext(ctx, `
+	_, err = a.db.ExecContext(ctx, `
 		INSERT INTO alert_rules (id, name, repository, job_id, condition_type, threshold_value, channel, destination, enabled, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NOW(), NOW())
 	`, id, params.Name, params.Repository, params.JobID, params.ConditionType, params.Threshold, params.Channel, params.Destination)
@@ -757,6 +909,9 @@ func (a *Assistant) executeCreateAlertRule(ctx context.Context, args json.RawMes
 		scope = fmt.Sprintf("repository `%s`", params.Repository)
 	}
 
+	// Format condition nicely
+	conditionDisplay := strings.TrimSuffix(params.ConditionType, "_threshold")
+
 	return fmt.Sprintf(`✅ **Created alert rule "%s"**
 
 | Setting | Value |
@@ -766,7 +921,7 @@ func (a *Assistant) executeCreateAlertRule(ctx context.Context, args json.RawMes
 | Notify via | %s → %s |
 
 🔗 [View in Alerts Dashboard](/app/alerts)`, 
-		params.Name, scope, params.ConditionType, params.Threshold, params.Channel, params.Destination), nil
+		params.Name, scope, conditionDisplay, params.Threshold, params.Channel, params.Destination), nil
 }
 
 func (a *Assistant) executeCreatePolicy(ctx context.Context, args json.RawMessage) (string, error) {
@@ -1249,7 +1404,7 @@ func (a *Assistant) executeDeletePolicy(ctx context.Context, args json.RawMessag
 	return fmt.Sprintf("✅ **Deleted policy for `%s`**\n\n🔗 [View Policies](/app/policies)", scope), nil
 }
 
-func (a *Assistant) executeAnalyzePage(ctx context.Context, args json.RawMessage) (string, error) {
+func (a *Assistant) executeAnalyzePage(_ context.Context, _ json.RawMessage) (string, error) {
 	// This is a special tool - it doesn't actually do anything,
 	// it's just a signal that the assistant should analyze the page context
 	// that was passed in the request.
@@ -1304,7 +1459,7 @@ func (a *Assistant) executeCreateRole(ctx context.Context, args json.RawMessage)
 🔗 [Manage Roles](/app/settings/roles)`, params.Name, params.Description, strings.Join(params.Permissions, ", ")), nil
 }
 
-func (a *Assistant) executeListRoles(ctx context.Context, args json.RawMessage) (string, error) {
+func (a *Assistant) executeListRoles(ctx context.Context, _ json.RawMessage) (string, error) {
 	rows, err := a.db.QueryContext(ctx, `
 		SELECT id, name, description, permissions, is_system
 		FROM roles
@@ -1514,7 +1669,7 @@ func (a *Assistant) executeCreateAPIKey(ctx context.Context, args json.RawMessag
 🔗 [Manage API Keys](/app/settings/api-keys)`, params.Name, keyPrefix, strings.Join(params.Scopes, ", "), expiresText), nil
 }
 
-func (a *Assistant) executeListAPIKeys(ctx context.Context, args json.RawMessage) (string, error) {
+func (a *Assistant) executeListAPIKeys(ctx context.Context, _ json.RawMessage) (string, error) {
 	rows, err := a.db.QueryContext(ctx, `
 		SELECT id, name, key_prefix, scopes, expires_at, revoked_at, last_used_at, created_at
 		FROM api_keys
@@ -1984,51 +2139,243 @@ func (a *Assistant) executeSearchAuditLogs(ctx context.Context, args json.RawMes
 	return sb.String(), nil
 }
 
+// executeGetRepositoryCosts returns cost breakdown by repository.
+func (a *Assistant) executeGetRepositoryCosts(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		Limit int `json:"limit"`
+	}
+	if len(args) > 0 {
+		json.Unmarshal(args, &params)
+	}
+	if params.Limit <= 0 {
+		params.Limit = 10
+	}
+
+	query := `
+		SELECT 
+			repository,
+			COUNT(*) as job_count,
+			ROUND(SUM((summary->'detected_machine'->>'on_demand_price_per_hour')::numeric * 
+				(summary->>'duration_seconds')::numeric / 3600)::numeric, 2) as total_cost
+		FROM jobs 
+		WHERE summary->'detected_machine'->>'on_demand_price_per_hour' IS NOT NULL
+		GROUP BY repository 
+		ORDER BY total_cost DESC 
+		LIMIT $1
+	`
+
+	rows, err := a.db.QueryContext(ctx, query, params.Limit)
+	if err != nil {
+		return "", fmt.Errorf("query failed: %w", err)
+	}
+	defer rows.Close()
+
+	var sb strings.Builder
+	sb.WriteString("## Repository Costs\n\n")
+	sb.WriteString("| Repository | Jobs | Total Cost |\n")
+	sb.WriteString("|------------|------|------------|\n")
+
+	var totalCost float64
+	var topRepo string
+	var topCost float64
+	rank := 0
+
+	for rows.Next() {
+		var repo string
+		var jobCount int
+		var cost float64
+		if err := rows.Scan(&repo, &jobCount, &cost); err != nil {
+			return "", err
+		}
+		rank++
+		if rank == 1 {
+			topRepo = repo
+			topCost = cost
+		}
+		totalCost += cost
+		sb.WriteString(fmt.Sprintf("| %s | %d | $%.2f |\n", repo, jobCount, cost))
+	}
+
+	sb.WriteString(fmt.Sprintf("\n**Total across all repos:** $%.2f\n", totalCost))
+	if topRepo != "" {
+		sb.WriteString(fmt.Sprintf("\n**Most expensive:** %s ($%.2f)\n", topRepo, topCost))
+	}
+
+	return sb.String(), nil
+}
+
+// executeGetRecommendations returns RunRight's machine recommendations for a repository.
+func (a *Assistant) executeGetRecommendations(ctx context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		Repository string `json:"repository"`
+		Limit      int    `json:"limit"`
+	}
+	if len(args) > 0 {
+		json.Unmarshal(args, &params)
+	}
+	if params.Limit <= 0 {
+		params.Limit = 10
+	}
+
+	query := `
+		SELECT 
+			summary->>'job_id' as job_id,
+			summary->>'repository' as repository,
+			summary->'detected_machine'->>'id' as current_machine,
+			(summary->'detected_machine'->>'on_demand_price_per_hour')::numeric as current_price,
+			(summary->'detected_machine'->>'vcpus')::int as current_vcpus,
+			(summary->'detected_machine'->>'memory_gib')::numeric as current_memory,
+			(summary->>'cpu_percent_peak')::numeric as cpu_peak,
+			(summary->>'cpu_percent_avg')::numeric as cpu_avg,
+			(summary->>'mem_used_gib_peak')::numeric as mem_peak,
+			(summary->>'mem_total_gib')::numeric as mem_total,
+			recommendations->0->'machine'->>'id' as recommended_machine,
+			(recommendations->0->'machine'->>'on_demand_price_per_hour')::numeric as recommended_price,
+			(recommendations->0->'machine'->>'vcpus')::int as recommended_vcpus,
+			(recommendations->0->'machine'->>'memory_gib')::numeric as recommended_memory,
+			(recommendations->0->>'current_monthly_usd')::numeric as current_monthly,
+			(recommendations->0->>'estimated_monthly_usd')::numeric as estimated_monthly,
+			(recommendations->0->>'cost_delta_percent')::numeric as cost_delta_pct,
+			recommendations->0->>'reasoning' as reasoning
+		FROM jobs
+		WHERE recommendations IS NOT NULL 
+		  AND jsonb_array_length(recommendations) > 0
+		  AND (recommendations->0->>'cost_delta_percent')::numeric < -5
+	`
+	queryArgs := []interface{}{}
+	argNum := 1
+
+	if params.Repository != "" {
+		query += fmt.Sprintf(" AND summary->>'repository' = $%d", argNum)
+		queryArgs = append(queryArgs, params.Repository)
+		argNum++
+	}
+
+	query += fmt.Sprintf(" ORDER BY ((recommendations->0->>'current_monthly_usd')::numeric - (recommendations->0->>'estimated_monthly_usd')::numeric) DESC LIMIT $%d", argNum)
+	queryArgs = append(queryArgs, params.Limit)
+
+	rows, err := a.db.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return "", fmt.Errorf("query failed: %w", err)
+	}
+	defer rows.Close()
+
+	var sb strings.Builder
+	sb.WriteString("## 💡 RunRight Recommendations\n\n")
+	if params.Repository != "" {
+		sb.WriteString(fmt.Sprintf("**Repository:** %s\n\n", params.Repository))
+	}
+
+	sb.WriteString("| Job | Current Machine | Recommended | Savings | Reason |\n")
+	sb.WriteString("|-----|-----------------|-------------|---------|--------|\n")
+
+	var totalSavings float64
+	count := 0
+
+	for rows.Next() {
+		var jobID, repo, currentMachine, recommendedMachine, reasoning sql.NullString
+		var currentPrice, recommendedPrice, currentMonthly, estimatedMonthly, costDeltaPct sql.NullFloat64
+		var currentVCPUs, recommendedVCPUs sql.NullInt64
+		var currentMemory, recommendedMemory, cpuPeak, cpuAvg, memPeak, memTotal sql.NullFloat64
+
+		if err := rows.Scan(
+			&jobID, &repo, &currentMachine, &currentPrice, &currentVCPUs, &currentMemory,
+			&cpuPeak, &cpuAvg, &memPeak, &memTotal,
+			&recommendedMachine, &recommendedPrice, &recommendedVCPUs, &recommendedMemory,
+			&currentMonthly, &estimatedMonthly, &costDeltaPct, &reasoning,
+		); err != nil {
+			continue
+		}
+
+		count++
+		savings := currentMonthly.Float64 - estimatedMonthly.Float64
+		totalSavings += savings
+
+		// Build utilization info
+		utilInfo := ""
+		if cpuPeak.Valid && memPeak.Valid && memTotal.Valid && memTotal.Float64 > 0 {
+			memPct := (memPeak.Float64 / memTotal.Float64) * 100
+			utilInfo = fmt.Sprintf("CPU: %.0f%%, Mem: %.0f%%", cpuPeak.Float64, memPct)
+		}
+
+		// Build machine comparison
+		currentDesc := currentMachine.String
+		if currentVCPUs.Valid && currentMemory.Valid {
+			currentDesc = fmt.Sprintf("%s (%dvCPU, %.0fGB, $%.2f/hr)", currentMachine.String, currentVCPUs.Int64, currentMemory.Float64, currentPrice.Float64)
+		}
+
+		recommendedDesc := recommendedMachine.String
+		if recommendedVCPUs.Valid && recommendedMemory.Valid {
+			recommendedDesc = fmt.Sprintf("%s (%dvCPU, %.0fGB, $%.2f/hr)", recommendedMachine.String, recommendedVCPUs.Int64, recommendedMemory.Float64, recommendedPrice.Float64)
+		}
+
+		reasonText := reasoning.String
+		if reasonText == "" {
+			reasonText = utilInfo
+		}
+		if len(reasonText) > 50 {
+			reasonText = reasonText[:47] + "..."
+		}
+
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s | **$%.2f/mo** | %s |\n",
+			jobID.String, currentDesc, recommendedDesc, savings, reasonText))
+	}
+
+	if count == 0 {
+		sb.WriteString("\nNo recommendations found")
+		if params.Repository != "" {
+			sb.WriteString(fmt.Sprintf(" for %s", params.Repository))
+		}
+		sb.WriteString(". Jobs may already be optimized or need more run data.\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("\n**Total Potential Savings:** $%.2f/mo ($%.2f/yr)\n", totalSavings, totalSavings*12))
+		sb.WriteString("\n### How to Apply:\n")
+		sb.WriteString("1. Review the recommendations above\n")
+		sb.WriteString("2. Update your CI workflow to use the recommended machine type\n")
+		sb.WriteString("3. RunRight will continue monitoring to verify savings\n")
+	}
+
+	return sb.String(), nil
+}
+
 // ToolsSystemPromptAddition returns the addition to the system prompt that describes tool capabilities.
 func (a *Assistant) ToolsSystemPromptAddition() string {
 	return `
 
-## CRITICAL: You are an AGENTIC assistant — you MUST take actions, not describe them
+## You are an intelligent assistant with tools. Use them wisely.
 
-You have function calling tools. When a user asks you to CREATE, MAKE, SET UP, DELETE, CONFIGURE, LIST, or MANAGE something, you MUST call the appropriate function tool IMMEDIATELY. DO NOT just describe what you would do — actually call the function.
+You have function calling tools to manage alerts, policies, jobs, roles, API keys, labels, and more.
 
-### MANDATORY AGENTIC BEHAVIOR:
+### CRITICAL RULES:
 
-When the user wants to CREATE/MAKE/SET UP:
-→ IMMEDIATELY call the create_* function. Do NOT describe it first.
+1. **ASK for missing required info** — If the user's request is vague or missing key details (like the NAME of an alert, or WHICH repository), ask a quick clarifying question first. Don't guess names.
 
-When the user wants to DELETE/REMOVE:
-→ IMMEDIATELY call the delete_* function. Do NOT ask for confirmation.
+2. **When user confirms, CALL THE TOOL** — When the user says "yes", "ok", "do it", etc. after you asked a clarifying question, you MUST call the appropriate tool immediately. Do NOT describe what you would do. Do NOT say "*calls ...*" or "[CALLS ...]". Actually invoke the tool.
 
-When the user wants to LIST/SHOW/VIEW:
-→ IMMEDIATELY call the list_* function. Do NOT say you'll look it up.
+3. **Report results briefly** — After a tool executes, give a short confirmation. Example: "Created alert 'high-cpu-warning' for runrightio/ml-platform."
 
-When the user wants to UPDATE/CHANGE/MODIFY:
-→ IMMEDIATELY call the update_* function. Do NOT explain what you'll change.
+4. **Don't ask permission** — When you have all the info you need, just call the tool. Don't ask "Would you like me to create this?"
 
-### FORBIDDEN BEHAVIORS (you will be penalized for these):
-❌ "I would create an alert with..." — NO! Call the function!
-❌ "Here's what the alert would look like..." — NO! Call the function!
-❌ "I can help you create..." — NO! Call the function!
-❌ "Let me check..." without calling a function — NO! Call the function!
-❌ "Would you like me to..." — NO! Just do it!
-❌ Describing parameters without calling the function
-❌ Asking for confirmation before taking action
+5. **Never describe tool calls** — Never write text like "*calls create_alert*" or "I will call the function". Just call it silently and report the result.
 
-### REQUIRED BEHAVIORS:
-✅ IMMEDIATELY call functions when user wants to create/delete/update/list anything
-✅ Use sensible defaults when parameters aren't specified
-✅ Infer repository names from context (e.g., "ml repo" = "runrightio/ml-platform")
-✅ After function executes, report the result conversationally
-✅ Chain multiple function calls if needed to complete the task
+### WHEN TO ASK FOR CLARIFICATION:
 
-### Available Tools by Category:
+Ask when:
+- Alert/policy/role NAME isn't specified: "What would you like to name this alert?"
+- Repository is ambiguous: "Which repository? (e.g., runrightio/ml-platform)"
+- Threshold/value isn't specified: "What threshold should trigger this alert?"
+
+Don't ask when:
+- You can use sensible defaults (e.g., enabled=true)
+- The user gave enough info to proceed
+
+### Available Tools:
 
 **ALERTS:**
 - create_alert_rule(name, condition_type, threshold, repository?, channel?, destination?)
 - list_alerts(repository?)
 - delete_alert(alert_id or alert_name)
-- toggle_alert(alert_id or alert_name, enabled)
+- toggle_alert(alert_id or alert_name, enabled?)
 
 **POLICIES:**
 - create_policy(max_cost_per_hour, repository?, job_id?, enabled?)
@@ -2065,34 +2412,54 @@ When the user wants to UPDATE/CHANGE/MODIFY:
 - delete_label(label)
 
 **AUDIT LOGS:**
-- search_audit_logs(action?, actor?, resource_type?, resource_name?, limit?) — find who did what. Examples: "who deleted the alert", "what did user X do", "show me all policy changes"
+- search_audit_logs(action?, actor?, resource_type?, resource_name?, limit?)
+
+**COST ANALYSIS:**
+- get_repository_costs(limit?) — get cost ranking of repos. Use when user asks about "most expensive", "highest cost", or "top spending" repositories
+- get_recommendations(repository?, limit?) — **CRITICAL: ALWAYS call this when user asks "how to save", "how to reduce costs", "what can we do", "fix it", or "recommendations"**. Returns specific machine switches with savings amounts.
 
 **ANALYSIS:**
-- analyze_page() — use when user asks about "this", "what I'm looking at"
+- analyze_page() — use when user asks about "this page", "what I'm looking at"
 
-### Example CORRECT Behavior:
+### IMPORTANT: When users ask about saving money or reducing costs:
 
-User: "create a developer role with read and write permissions"
-Assistant: [CALLS create_role immediately with: name="developer", permissions=["read","write"]]
-Then: "Done! Created the 'developer' role with read and write permissions."
+1. **ALWAYS call get_recommendations()** first to get RunRight's specific machine recommendations
+2. Present the actual machine switches (e.g., "switch gpu-inference from p3.2xlarge to p3.xlarge")
+3. Show the specific savings amounts from the tool results
+4. Explain WHY based on utilization data (CPU %, memory %)
 
-User: "list all users"
-Assistant: [CALLS list_users immediately]
-Then: Shows the formatted user list
+### Example Conversations:
 
-User: "make an API key for our CI system"
-Assistant: [CALLS create_api_key immediately with: name="CI System"]
-Then: "Created API key 'CI System'. The key prefix is rr_xxx... Store the full key securely!"
+**User:** "What is the most expensive repo?"
+**You:** *calls get_repository_costs* → "**runrightio/ml-platform** is your most expensive repo at **$1505.66 total**."
 
-User: "create a label for ubuntu-latest-16-cores with 16 vcpus, 64gb memory, costing $0.77/hr"
-Assistant: [CALLS create_label immediately with: label="ubuntu-latest-16-cores", vcpus=16, memory_gib=64, cost_per_hour=0.77]
+**User:** "What can we do to fix it or save on it?"
+**You:** *calls get_recommendations(repository="runrightio/ml-platform")* → Shows specific recommendations:
 
-User: "who deleted the high-cpu-usage alert?"
-Assistant: [CALLS search_audit_logs immediately with: action="delete", resource_type="alert", resource_name="high-cpu-usage"]
-Then: Shows the audit log entry with actor and timestamp
-Then: "Created label 'ubuntu-latest-16-cores' with 16 vCPUs, 64 GiB memory at $0.77/hr."
+"Here are RunRight's recommendations for **runrightio/ml-platform**:
 
-### Key Principle:
-Think "function first, explain second". Never explain what you WOULD do — just DO it, then explain what you DID.
+| Job | Current | Recommended | Savings |
+|-----|---------|-------------|---------|
+| gpu-inference | p3.2xlarge ($3.06/hr) | p3.xlarge ($1.53/hr) | **$125.90/mo** |
+| ml-training | m5.4xlarge ($0.77/hr) | m5.2xlarge ($0.38/hr) | **$48.20/mo** |
+
+The gpu-inference job only uses 45% GPU and 32% memory, so a smaller instance is sufficient.
+**Total potential savings: $174.10/mo ($2,089/yr)**"
+
+**User:** "Make an alert for our most expensive repo"
+**You:** *calls get_repository_costs* → finds runrightio/ml-platform is #1 at $1505
+**You:** "Your most expensive repo is runrightio/ml-platform ($1505). What should I name this alert and what threshold should trigger it?"
+
+**User:** "call it ml-cost-alert at $50/hr"
+**You:** *calls create_alert_rule* → "Created alert 'ml-cost-alert' for runrightio/ml-platform — triggers when cost exceeds $50/hr."
+
+**User:** "list all users"
+**You:** *calls list_users* → Shows the formatted user list
+
+**User:** "create a CI API key"
+**You:** *calls create_api_key with name="CI"* → "Created API key 'CI'. Key prefix: rr_abc... (save the full key securely)"
+
+**User:** "who deleted the high-cpu alert?"
+**You:** *calls search_audit_logs* → "dev@runright.io deleted 'high-cpu-alert' on July 8 at 3:45 PM."
 `
 }
