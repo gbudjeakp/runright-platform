@@ -27,6 +27,7 @@ export default function AutoPRPage() {
   const [statusFilter, setStatusFilter] = useState('pending')
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
+  const [approveErrors, setApproveErrors] = useState<Record<string, string>>({})
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -70,19 +71,20 @@ export default function AutoPRPage() {
   }, [note])
 
   const handleApprove = async (id: string) => {
+    // Clear any previous error for this card
+    setApproveErrors((prev) => { const n = {...prev}; delete n[id]; return n })
     try {
       const result = await approvePRRecommendation(id)
       if (result.pr_url) {
-        setNote(`PR created! View it at: ${result.pr_url}`)
-      } else {
-        setNote('Recommendation approved (PR creation pending)')
+        setNote(`PR created: ${result.pr_url}`)
       }
       loadData()
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { error?: string } } })?.response?.data?.error
         ?? 'Failed to approve'
-      setError(msg)
+      setApproveErrors((prev) => ({ ...prev, [id]: msg }))
+      loadData()
     }
   }
 
@@ -186,6 +188,7 @@ export default function AutoPRPage() {
           {activeTab === 'recommendations' && (
             <RecommendationsTab
               recommendations={recommendations}
+              approveErrors={approveErrors}
               onApprove={handleApprove}
               onDismiss={handleDismiss}
             />
@@ -214,8 +217,9 @@ export default function AutoPRPage() {
   )
 }
 
-function RecommendationsTab({ recommendations, onApprove, onDismiss }: {
+function RecommendationsTab({ recommendations, approveErrors, onApprove, onDismiss }: {
   recommendations: PRRecommendation[]
+  approveErrors: Record<string, string>
   onApprove: (id: string) => void
   onDismiss: (id: string) => void
 }) {
@@ -331,15 +335,20 @@ function RecommendationsTab({ recommendations, onApprove, onDismiss }: {
                     PR #{rec.pr_number || 'View'}
                   </a>
                 ) : (
-                  <>
-                    <span className="text-[var(--text-light)] text-sm italic">PR creation pending</span>
-                    <button
-                      className="text-xs text-[var(--red)] hover:underline font-deco tracking-wide"
-                      onClick={() => onApprove(rec.id)}
-                    >
-                      Retry
-                    </button>
-                  </>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[var(--text-light)] text-sm italic">PR creation pending</span>
+                      <button
+                        className="text-xs text-[var(--red)] hover:underline font-deco tracking-wide"
+                        onClick={() => onApprove(rec.id)}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                    {approveErrors[rec.id] && (
+                      <p className="text-xs text-[var(--red)] max-w-sm leading-snug">{approveErrors[rec.id]}</p>
+                    )}
+                  </div>
                 )}
               </div>
             )}

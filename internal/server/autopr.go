@@ -516,7 +516,11 @@ func (s *Server) approvePRRecommendation(c *gin.Context) {
 		ConsecutiveRuns:  rec.ConsecutiveUnderutilized,
 	})
 	if prErr != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "GitHub PR creation failed: " + prErr.Error()})
+		msg := prErr.Error()
+		if strings.Contains(msg, "workflow") || strings.Contains(msg, "403") || strings.Contains(msg, "scope") {
+			msg += " — ensure your PAT has the 'workflow' scope (required to edit .github/workflows/ files)"
+		}
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "GitHub PR creation failed: " + msg})
 		return
 	}
 
