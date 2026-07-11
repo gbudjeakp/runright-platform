@@ -331,7 +331,15 @@ function RecommendationsTab({ recommendations, onApprove, onDismiss }: {
                     PR #{rec.pr_number || 'View'}
                   </a>
                 ) : (
-                  <span className="text-[var(--text-light)] text-sm italic">PR creation pending...</span>
+                  <>
+                    <span className="text-[var(--text-light)] text-sm italic">PR creation pending</span>
+                    <button
+                      className="text-xs text-[var(--red)] hover:underline font-deco tracking-wide"
+                      onClick={() => onApprove(rec.id)}
+                    >
+                      Retry
+                    </button>
+                  </>
                 )}
               </div>
             )}
