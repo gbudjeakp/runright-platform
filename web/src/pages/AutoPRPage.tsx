@@ -28,6 +28,7 @@ export default function AutoPRPage() {
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
   const [approveErrors, setApproveErrors] = useState<Record<string, string>>({})
+  const [approving, setApproving] = useState<Record<string, boolean>>({})
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -71,20 +72,26 @@ export default function AutoPRPage() {
   }, [note])
 
   const handleApprove = async (id: string) => {
-    // Clear any previous error for this card
+    // Clear any previous error for this card and mark as in-progress
     setApproveErrors((prev) => { const n = {...prev}; delete n[id]; return n })
+    setApproving((prev) => ({ ...prev, [id]: true }))
     try {
       const result = await approvePRRecommendation(id)
       if (result.pr_url) {
         setNote(`PR created: ${result.pr_url}`)
+      } else {
+        // Shouldn't happen — means backend approved but no pr_url was returned
+        setApproveErrors((prev) => ({ ...prev, [id]: 'PR approved but no URL returned — check server logs for GitHub API errors.' }))
       }
       loadData()
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { error?: string } } })?.response?.data?.error
-        ?? 'Failed to approve'
+        ?? 'Failed to approve — check that the server is reachable'
       setApproveErrors((prev) => ({ ...prev, [id]: msg }))
       loadData()
+    } finally {
+      setApproving((prev) => { const n = {...prev}; delete n[id]; return n })
     }
   }
 
@@ -189,6 +196,7 @@ export default function AutoPRPage() {
             <RecommendationsTab
               recommendations={recommendations}
               approveErrors={approveErrors}
+              approving={approving}
               onApprove={handleApprove}
               onDismiss={handleDismiss}
             />
@@ -217,9 +225,10 @@ export default function AutoPRPage() {
   )
 }
 
-function RecommendationsTab({ recommendations, approveErrors, onApprove, onDismiss }: {
+function RecommendationsTab({ recommendations, approveErrors, approving, onApprove, onDismiss }: {
   recommendations: PRRecommendation[]
   approveErrors: Record<string, string>
+  approving: Record<string, boolean>
   onApprove: (id: string) => void
   onDismiss: (id: string) => void
 }) {
@@ -309,7 +318,9 @@ function RecommendationsTab({ recommendations, approveErrors, onApprove, onDismi
 
             {rec.status === 'pending' && (
               <div className="flex gap-3 mt-4 pt-4 border-t border-[var(--border)]">
-                <button className="btn-rr" onClick={() => onApprove(rec.id)}>Approve & Create PR</button>
+                <button className="btn-rr" disabled={approving[rec.id]} onClick={() => onApprove(rec.id)}>
+                  {approving[rec.id] ? 'Creating PR…' : 'Approve & Create PR'}
+                </button>
                 <button 
                   className="px-4 py-2 border border-[var(--border)] text-[var(--text-mid)] font-deco text-[13px] tracking-[1px] hover:border-[var(--border-dark)] hover:text-[var(--text)] transition-colors cursor-pointer bg-transparent"
                   onClick={() => onDismiss(rec.id)}
@@ -339,10 +350,11 @@ function RecommendationsTab({ recommendations, approveErrors, onApprove, onDismi
                     <div className="flex items-center gap-2">
                       <span className="text-[var(--text-light)] text-sm italic">PR creation pending</span>
                       <button
-                        className="text-xs text-[var(--red)] hover:underline font-deco tracking-wide"
+                        className="text-xs text-[var(--red)] hover:underline font-deco tracking-wide disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={approving[rec.id]}
                         onClick={() => onApprove(rec.id)}
                       >
-                        Retry
+                        {approving[rec.id] ? 'Creating PR…' : 'Retry'}
                       </button>
                     </div>
                     {approveErrors[rec.id] && (

@@ -504,9 +504,17 @@ func (s *Server) approvePRRecommendation(c *gin.Context) {
 	// Resolve GitHub token: DB setting takes precedence over env var.
 	ghClient, err := s.getGitHubClient(ctx)
 	if err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "No GitHub token configured. Add a Personal Access Token (with 'contents' and 'pull_requests' scopes) in the Auto PR → Settings tab.",
-		})
+		// Distinguish "no token at all" from "token exists but can't be used".
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "decrypt") || strings.Contains(errMsg, "RUNRIGHT_ENCRYPTION_KEY") {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error": "Stored GitHub token could not be decrypted: " + errMsg + ". Re-save the token in Auto PR → Settings.",
+			})
+		} else {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error": "No GitHub token configured. Add a Personal Access Token with the 'repo' and 'workflow' scopes in the Auto PR → Settings tab.",
+			})
+		}
 		return
 	}
 
