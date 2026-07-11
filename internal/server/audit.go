@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -50,8 +52,8 @@ func (s *Server) logAudit(ctx context.Context, actor string, c *gin.Context, act
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'success')
 	`, teamID, actor, ip, ua, action, resourceType, resourceID, resourceName, detailsJSON)
 	if err != nil {
-		// Don't fail the request if audit logging fails
-		// TODO: log to stderr or metrics
+		// Don't fail the request if audit logging fails, but log to stderr
+		fmt.Fprintf(os.Stderr, "audit: failed to log %s for %s: %v\n", action, actor, err)
 	}
 }
 

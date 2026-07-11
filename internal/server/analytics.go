@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -631,20 +633,14 @@ func (s *Server) runReportNow(c *gin.Context) {
 		INSERT INTO report_runs (report_id, status) VALUES ($1, 'running') RETURNING id
 	`, reportID).Scan(&runID)
 
-	// TODO: Actually generate the report async
-	// For now, mark as completed
-	s.db.ExecContext(ctx, `
-		UPDATE report_runs SET status = 'completed', completed_at = NOW() WHERE id = $1
-	`, runID)
-	s.db.ExecContext(ctx, `
-		UPDATE scheduled_reports SET last_run_at = NOW() WHERE id = $1
-	`, reportID)
+	// Generate report asynchronously
+	go s.generateReportAsync(reportID, runID, report)
 
 	s.logAudit(ctx, userEmail, c, "report.run", "scheduled_report", reportID, "", map[string]any{
 		"team_id":     report.TeamID,
 		"report_type": report.ReportType,
 	})
-	c.JSON(http.StatusOK, gin.H{"run_id": runID, "status": "completed"})
+	c.JSON(http.StatusOK, gin.H{"run_id": runID, "status": "running"})
 }
 
 func calculateNextRun(schedule, timezone string) time.Time {
@@ -674,4 +670,268 @@ func calculateNextRun(schedule, timezone string) time.Time {
 	default:
 		return now.Add(24 * time.Hour)
 	}
+}
+
+// generateReportAsync generates a report in the background and updates status.
+func (s *Server) generateReportAsync(reportID, runID string, report ScheduledReport) {
+	ctx := context.Background()
+	startTime := time.Now()
+
+	// Default to last 30 days
+	endDate := time.Now()
+	startDate := endDate.AddDate(0, 0, -30)
+
+	var reportData any
+	var err error
+
+	switch report.ReportType {
+	case "cost_summary":
+		reportData, err = s.generateCostSummaryReport(ctx, report.TeamID, startDate, endDate)
+	case "savings":
+		reportData, err = s.generateSavingsReport(ctx, report.TeamID, startDate, endDate)
+	case "utilization":
+		reportData, err = s.generateUtilizationReport(ctx, report.TeamID, startDate, endDate)
+	case "audit":
+		reportData, err = s.generateAuditReport(ctx, report.TeamID, startDate, endDate)
+	default:
+		err = fmt.Errorf("unknown report type: %s", report.ReportType)
+	}
+
+	if err != nil {
+		s.db.ExecContext(ctx, `
+			UPDATE report_runs SET status = 'failed', error_message = $1, completed_at = NOW() WHERE id = $2
+		`, err.Error(), runID)
+		return
+	}
+
+	// Store report output
+	reportJSON, _ := json.Marshal(reportData)
+	s.db.ExecContext(ctx, `
+		UPDATE report_runs SET status = 'completed', output = $1, completed_at = NOW() WHERE id = $2
+	`, reportJSON, runID)
+	s.db.ExecContext(ctx, `
+		UPDATE scheduled_reports SET last_run_at = NOW() WHERE id = $1
+	`, reportID)
+
+	fmt.Printf("report: generated %s for %s in %v\n", report.ReportType, reportID, time.Since(startTime))
+}
+
+func (s *Server) generateCostSummaryReport(ctx context.Context, teamID string, startDate, endDate time.Time) (any, error) {
+	type CostSummary struct {
+		PeriodStart    string       `json:"period_start"`
+		PeriodEnd      string       `json:"period_end"`
+		TotalCost      float64      `json:"total_cost"`
+		TotalJobs      int          `json:"total_jobs"`
+		AvgCostPerJob  float64      `json:"avg_cost_per_job"`
+		TopRepos       []RepoStats  `json:"top_repositories"`
+	}
+
+	result := CostSummary{
+		PeriodStart: startDate.Format("2006-01-02"),
+		PeriodEnd:   endDate.Format("2006-01-02"),
+	}
+
+	query := `
+		SELECT 
+			COUNT(*),
+			COALESCE(SUM(
+				(summary->'detected_machine'->>'on_demand_price_per_hour')::numeric * 
+				(summary->>'duration_seconds')::numeric / 3600
+			), 0)
+		FROM jobs
+		WHERE created_at >= $1 AND created_at <= $2 AND summary IS NOT NULL
+	`
+	args := []any{startDate, endDate}
+	if teamID != "" {
+		query += " AND team_id = $3"
+		args = append(args, teamID)
+	}
+
+	s.db.QueryRowContext(ctx, query, args...).Scan(&result.TotalJobs, &result.TotalCost)
+	if result.TotalJobs > 0 {
+		result.AvgCostPerJob = result.TotalCost / float64(result.TotalJobs)
+	}
+
+	// Top repos
+	repoQuery := `
+		SELECT repository, COUNT(*), COALESCE(SUM(
+			(summary->'detected_machine'->>'on_demand_price_per_hour')::numeric * 
+			(summary->>'duration_seconds')::numeric / 3600
+		), 0), 0
+		FROM jobs WHERE created_at >= $1 AND created_at <= $2 AND summary IS NOT NULL
+	`
+	repoArgs := []any{startDate, endDate}
+	if teamID != "" {
+		repoQuery += " AND team_id = $3"
+		repoArgs = append(repoArgs, teamID)
+	}
+	repoQuery += " GROUP BY repository ORDER BY 3 DESC LIMIT 10"
+
+	rows, err := s.db.QueryContext(ctx, repoQuery, repoArgs...)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var r RepoStats
+			rows.Scan(&r.Repository, &r.JobCount, &r.TotalCost, &r.PotentialSavings)
+			result.TopRepos = append(result.TopRepos, r)
+		}
+	}
+
+	return result, nil
+}
+
+func (s *Server) generateSavingsReport(ctx context.Context, teamID string, startDate, endDate time.Time) (any, error) {
+	type SavingsReport struct {
+		PeriodStart      string  `json:"period_start"`
+		PeriodEnd        string  `json:"period_end"`
+		TotalSavings     float64 `json:"total_savings"`
+		SavingsPercent   float64 `json:"savings_percent"`
+		TotalCost        float64 `json:"total_cost"`
+		OptimizedCost    float64 `json:"optimized_cost"`
+		RecsApplied      int     `json:"recommendations_applied"`
+		RecsAvailable    int     `json:"recommendations_available"`
+	}
+
+	result := SavingsReport{
+		PeriodStart: startDate.Format("2006-01-02"),
+		PeriodEnd:   endDate.Format("2006-01-02"),
+	}
+
+	query := `
+		SELECT 
+			COALESCE(SUM((summary->'detected_machine'->>'on_demand_price_per_hour')::numeric * (summary->>'duration_seconds')::numeric / 3600), 0),
+			COALESCE(SUM(CASE WHEN recommendations IS NOT NULL AND jsonb_array_length(recommendations) > 0
+				THEN GREATEST(0, (
+					(summary->'detected_machine'->>'on_demand_price_per_hour')::numeric - 
+					COALESCE((recommendations->0->'machine'->>'on_demand_price_per_hour')::numeric, 
+						(summary->'detected_machine'->>'on_demand_price_per_hour')::numeric)
+				) * (summary->>'duration_seconds')::numeric / 3600)
+				ELSE 0 END), 0),
+			COUNT(CASE WHEN recommendations IS NOT NULL AND jsonb_array_length(recommendations) > 0 THEN 1 END)
+		FROM jobs WHERE created_at >= $1 AND created_at <= $2 AND summary IS NOT NULL
+	`
+	args := []any{startDate, endDate}
+	if teamID != "" {
+		query += " AND team_id = $3"
+		args = append(args, teamID)
+	}
+
+	s.db.QueryRowContext(ctx, query, args...).Scan(&result.TotalCost, &result.TotalSavings, &result.RecsAvailable)
+	result.OptimizedCost = result.TotalCost - result.TotalSavings
+	if result.TotalCost > 0 {
+		result.SavingsPercent = (result.TotalSavings / result.TotalCost) * 100
+	}
+
+	return result, nil
+}
+
+func (s *Server) generateUtilizationReport(ctx context.Context, teamID string, startDate, endDate time.Time) (any, error) {
+	type UtilizationReport struct {
+		PeriodStart   string  `json:"period_start"`
+		PeriodEnd     string  `json:"period_end"`
+		AvgCPU        float64 `json:"avg_cpu_percent"`
+		AvgMemory     float64 `json:"avg_memory_percent"`
+		IdleJobCount  int     `json:"idle_job_count"`
+		TotalJobCount int     `json:"total_job_count"`
+		IdlePercent   float64 `json:"idle_percent"`
+	}
+
+	result := UtilizationReport{
+		PeriodStart: startDate.Format("2006-01-02"),
+		PeriodEnd:   endDate.Format("2006-01-02"),
+	}
+
+	query := `
+		SELECT 
+			COUNT(*),
+			COALESCE(AVG((summary->>'cpu_percent_peak')::numeric), 0),
+			COALESCE(AVG(CASE WHEN (summary->>'mem_total_gib')::numeric > 0 
+				THEN (summary->>'mem_used_gib_peak')::numeric / (summary->>'mem_total_gib')::numeric * 100 ELSE 0 END), 0),
+			COUNT(CASE WHEN (summary->>'cpu_percent_peak')::numeric < 20 THEN 1 END)
+		FROM jobs WHERE created_at >= $1 AND created_at <= $2 AND summary IS NOT NULL
+	`
+	args := []any{startDate, endDate}
+	if teamID != "" {
+		query += " AND team_id = $3"
+		args = append(args, teamID)
+	}
+
+	s.db.QueryRowContext(ctx, query, args...).Scan(&result.TotalJobCount, &result.AvgCPU, &result.AvgMemory, &result.IdleJobCount)
+	if result.TotalJobCount > 0 {
+		result.IdlePercent = float64(result.IdleJobCount) / float64(result.TotalJobCount) * 100
+	}
+
+	return result, nil
+}
+
+func (s *Server) generateAuditReport(ctx context.Context, teamID string, startDate, endDate time.Time) (any, error) {
+	type AuditReport struct {
+		PeriodStart   string     `json:"period_start"`
+		PeriodEnd     string     `json:"period_end"`
+		TotalEvents   int        `json:"total_events"`
+		ByAction      map[string]int `json:"by_action"`
+		ByActor       map[string]int `json:"by_actor"`
+		FailureCount  int        `json:"failure_count"`
+	}
+
+	result := AuditReport{
+		PeriodStart: startDate.Format("2006-01-02"),
+		PeriodEnd:   endDate.Format("2006-01-02"),
+		ByAction:    make(map[string]int),
+		ByActor:     make(map[string]int),
+	}
+
+	// Total events and failures
+	query := `
+		SELECT COUNT(*), COUNT(CASE WHEN status = 'failure' THEN 1 END)
+		FROM audit_logs WHERE created_at >= $1 AND created_at <= $2
+	`
+	args := []any{startDate, endDate}
+	if teamID != "" {
+		query += " AND team_id = $3"
+		args = append(args, teamID)
+	}
+	s.db.QueryRowContext(ctx, query, args...).Scan(&result.TotalEvents, &result.FailureCount)
+
+	// By action
+	actionQuery := `SELECT action, COUNT(*) FROM audit_logs WHERE created_at >= $1 AND created_at <= $2`
+	actionArgs := []any{startDate, endDate}
+	if teamID != "" {
+		actionQuery += " AND team_id = $3"
+		actionArgs = append(actionArgs, teamID)
+	}
+	actionQuery += " GROUP BY action ORDER BY 2 DESC LIMIT 20"
+
+	rows, err := s.db.QueryContext(ctx, actionQuery, actionArgs...)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var action string
+			var count int
+			rows.Scan(&action, &count)
+			result.ByAction[action] = count
+		}
+	}
+
+	// By actor
+	actorQuery := `SELECT actor_email, COUNT(*) FROM audit_logs WHERE created_at >= $1 AND created_at <= $2`
+	actorArgs := []any{startDate, endDate}
+	if teamID != "" {
+		actorQuery += " AND team_id = $3"
+		actorArgs = append(actorArgs, teamID)
+	}
+	actorQuery += " GROUP BY actor_email ORDER BY 2 DESC LIMIT 20"
+
+	actorRows, err := s.db.QueryContext(ctx, actorQuery, actorArgs...)
+	if err == nil {
+		defer actorRows.Close()
+		for actorRows.Next() {
+			var actor string
+			var count int
+			actorRows.Scan(&actor, &count)
+			result.ByActor[actor] = count
+		}
+	}
+
+	return result, nil
 }
