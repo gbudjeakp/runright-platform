@@ -36,6 +36,7 @@ type Server struct {
 	assistant       *assistant.Assistant
 	embeddings      *embeddings.Service
 	wsHub           *WSHub
+	githubApp       *GitHubApp
 	// SMTP config for email notifications
 	smtpHost string
 	smtpUser string
@@ -126,6 +127,18 @@ func New(cfg Config) (*Server, error) {
 		sso.GET("/callback/:provider", s.ssoCallback)
 		sso.POST("/callback/:provider", s.ssoCallback) // SAML uses POST
 		sso.POST("/logout", s.ssoLogout)
+	}
+
+	// GitHub App — initialize and register routes
+	s.githubApp = NewGitHubApp(db, s)
+	gh := r.Group("/api/v1/github")
+	{
+		// Webhook endpoint — no auth, uses signature verification
+		gh.POST("/webhook", s.githubApp.HandleWebhook)
+		// OAuth callback for user login via GitHub App
+		gh.GET("/callback", s.handleGitHubOAuthCallback)
+		// App status — public
+		gh.GET("/status", s.githubApp.GetAppStatus)
 	}
 
 	// Auth endpoint — no middleware applied here.
@@ -235,6 +248,12 @@ func New(cfg Config) (*Server, error) {
 		// GPU Analysis
 		v1.GET("/gpu/tiers", s.listGPUTiers)
 		v1.POST("/gpu/recommendation", s.getGPURecommendation)
+
+		// GitHub App Management (authenticated)
+		v1.GET("/github/installations", s.githubApp.ListInstallations)
+		v1.GET("/github/installations/:installationId/repos", s.githubApp.GetInstallationRepos)
+		v1.GET("/github/workflow-runs", s.listWorkflowRuns)
+		v1.POST("/github/inject-workflow", s.requirePermission(PermPoliciesManage), s.injectWorkflowAction)
 	}
 
 	// Register AI Assistant routes

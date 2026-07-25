@@ -1,0 +1,81 @@
+# flyctl launch added from .gitignore
+# Go
+**/*.exe
+**/*.exe~
+**/*.dll
+**/*.so
+**/*.dylib
+**/*.test
+**/*.out
+bin
+dist
+**/vendor
+
+# Go workspace
+**/go.work
+**/go.work.sum
+
+# Web
+**/node_modules
+**/web/dist
+**/web/.env
+**/web/.env.local
+
+# Environment & secrets
+**/.env
+**/.env.*
+!**/.env.example
+
+# Editor
+**/.vscode
+**/.idea
+**/*.swp
+**/*.swo
+
+# OS
+**/.DS_Store
+**/Thumbs.db
+
+# Docker volumes / local state
+**/tmp
+**/*.pid
+
+# Terraform
+**/terraform/.terraform
+**/terraform/.terraform.lock.hcl
+**/terraform/*.tfstate
+**/terraform/*.tfstate.backup
+**/terraform/*.tfvars
+
+# flyctl launch added from web/.gitignore
+# Logs
+web/**/logs
+web/**/*.log
+web/**/npm-debug.log*
+web/**/yarn-debug.log*
+web/**/yarn-error.log*
+web/**/pnpm-debug.log*
+web/**/lerna-debug.log*
+
+web/**/node_modules
+web/**/dist
+web/**/dist-ssr
+web/**/*.local
+
+# Editor directories and files
+web/**/.vscode/*
+!web/**/.vscode/extensions.json
+web/**/.idea
+web/**/.DS_Store
+web/**/*.suo
+web/**/*.ntvs*
+web/**/*.njsproj
+web/**/*.sln
+web/**/*.sw?
+
+# flyctl launch added from web/node_modules/.ignored_tailwindcss/stubs/.gitignore
+!web/node_modules/.ignored_tailwindcss/stubs/**/*
+
+# flyctl launch added from web/node_modules/.pnpm/tailwindcss@3.4.19/node_modules/tailwindcss/stubs/.gitignore
+!web/node_modules/.pnpm/tailwindcss@3.4.19/node_modules/tailwindcss/stubs/**/*
+fly.toml

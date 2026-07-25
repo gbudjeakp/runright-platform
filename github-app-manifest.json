@@ -1,0 +1,32 @@
+{
+  "name": "RunRight CI",
+  "url": "https://runright-api.fly.dev",
+  "hook_attributes": {
+    "url": "https://runright-api.fly.dev/api/v1/github/webhook",
+    "active": true
+  },
+  "redirect_url": "https://runright-api.fly.dev/api/v1/github/callback",
+  "callback_urls": [
+    "https://runright-api.fly.dev/api/v1/github/callback",
+    "http://localhost:8080/api/v1/github/callback"
+  ],
+  "setup_url": "https://runright-api.fly.dev/app/github/setup",
+  "setup_on_update": true,
+  "public": true,
+  "default_permissions": {
+    "actions": "read",
+    "checks": "write",
+    "contents": "read",
+    "metadata": "read",
+    "pull_requests": "write",
+    "workflows": "read"
+  },
+  "default_events": [
+    "workflow_run",
+    "check_run",
+    "installation",
+    "installation_repositories"
+  ],
+  "description": "Right-size your CI machines. RunRight monitors CPU/memory usage and recommends cheaper instance types.",
+  "single_file_name": ".github/runright.yml"
+}

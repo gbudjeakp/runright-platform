@@ -31,7 +31,12 @@ You do **not** need this repo to use RunRight. The agent works standalone with O
 
 ## Quick start
 
+### Option 1: Docker Compose (recommended)
+
 ```bash
+# Clone and start
+git clone https://github.com/gbudjeakp/runright-platform.git
+cd runright-platform
 export RUNRIGHT_API_KEY=$(openssl rand -hex 32)
 docker compose up -d
 ```
@@ -41,6 +46,101 @@ docker compose up -d
 | Dashboard | http://localhost:3000  |
 | API       | http://localhost:8080  |
 | PostgreSQL | localhost:5435        |
+
+### Option 2: One-click cloud deploy
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/runright)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/gbudjeakp/runright-platform)
+
+### Option 3: Fly.io
+
+```bash
+# Install flyctl: https://fly.io/docs/flyctl/install/
+fly auth login
+fly launch --name my-runright --region iad
+fly postgres create --name my-runright-db --region iad
+fly postgres attach my-runright-db
+
+# Set secrets
+fly secrets set \
+  RUNRIGHT_API_KEY=$(openssl rand -hex 32) \
+  RUNRIGHT_BASE_URL=https://my-runright.fly.dev
+
+fly deploy
+```
+
+### Option 4: Kubernetes (Helm)
+
+```bash
+helm repo add runright https://gbudjeakp.github.io/runright-platform
+helm install runright runright/runright-platform \
+  --set apiKey=$(openssl rand -hex 32) \
+  --set postgresql.enabled=true
+```
+
+---
+
+## GitHub App integration (optional)
+
+For automatic workflow monitoring without modifying CI files, set up a GitHub App:
+
+### 1. Create the GitHub App
+
+Go to [GitHub Developer Settings](https://github.com/settings/apps/new) and create an app with:
+
+| Setting | Value |
+|---------|-------|
+| **Name** | `YourOrg RunRight` |
+| **Homepage URL** | Your RunRight URL |
+| **Webhook URL** | `https://your-runright.example.com/api/v1/github/webhook` |
+| **Webhook Secret** | Generate with `openssl rand -hex 32` |
+
+**Permissions:**
+- Actions: Read
+- Checks: Read & Write  
+- Contents: Read
+- Metadata: Read
+- Pull requests: Read & Write
+- Workflows: Read
+
+**Events:** Check run, Workflow run
+
+### 2. Generate a private key
+
+After creating the app, click **Generate a private key** and download the `.pem` file.
+
+### 3. Configure RunRight
+
+Add to your `.env` or set as environment variables:
+
+```bash
+GITHUB_APP_ID=123456
+GITHUB_APP_CLIENT_ID=Iv1.abc123
+GITHUB_APP_SLUG=yourorg-runright
+GITHUB_APP_WEBHOOK_SECRET=your-webhook-secret
+GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
+...
+-----END RSA PRIVATE KEY-----"
+```
+
+Or with Fly.io:
+```bash
+fly secrets set \
+  GITHUB_APP_ID=123456 \
+  GITHUB_APP_CLIENT_ID=Iv1.abc123 \
+  GITHUB_APP_SLUG=yourorg-runright \
+  GITHUB_APP_WEBHOOK_SECRET=$(cat webhook-secret.txt) \
+  GITHUB_APP_PRIVATE_KEY="$(cat private-key.pem)" \
+  --app my-runright
+```
+
+### 4. Install the app
+
+Visit `https://github.com/apps/yourorg-runright/installations/new` and install on your repos.
+
+---
+
+## Agent integration (alternative to GitHub App)
 
 Point your agents at the platform by adding to your CI:
 
